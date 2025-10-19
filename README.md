@@ -2,9 +2,9 @@
 
 
 Cloud adoption has reshaped the enterprise attack surface, where adversaries can chain misconfigurations, excessive permissions, and runtime blind spots into full compromises.  
-**Cloud Detection & Response GOAT** is a scenario-driven, intentionally vulnerable framework designed to help defenders validate detection pipelines, practice SOC workflows and train analysts on realistic cloud attack paths - all in a safe, reproducible environment with no impact on production.  
+**CDRGoat (Cloud Detection & Response GOAT)** is a scenario-driven, intentionally vulnerable framework designed to help defenders validate detection pipelines, practice SOC workflows and train analysts on realistic cloud attack paths - all in a safe, reproducible environment with no impact on production.  
 
-CDR GOAT enables:
+CDRGoat enables:
 - **Advanced simulations** - Misconfigurations combined with live attacker behavior (privilege escalation, credential theft, lateral movement).  
 - **Detection & response validation** - Confirm alerts fire, understand context, and rehearse investigation workflows under realistic pressure.  
 - **SOC readiness** - Train analysts on real signals instead of abstract examples.  
@@ -12,7 +12,7 @@ CDR GOAT enables:
 
 &nbsp;
 
-## ⚠️ Warning
+## ⚠️ CDRGoat Warning
 - Do **not** deploy to production
 - Use only isolated sandbox/test accounts
 - Expect cloud usage costs while resources are running
@@ -20,22 +20,22 @@ CDR GOAT enables:
 
 &nbsp;
 
-## ✨ Features
+## ✨ CDRGoat Features
 - **Scenario‑driven attack paths** - Reproducible simulations of real‑world adversary tactics in cloud environments (IAM abuse, SSRF, privilege escalation, data exfiltration, etc.).
 - **Safe to run** - Resources are provisioned in isolated test accounts with minimal blast radius.
 - **Automated Attack Script** - A fully automated script to execute attacks end-to-end, reducing manual steps and ensuring repeatable outcomes.
 
 &nbsp;
 
-## 🚀 Getting Started
+## 🚀 CDRGoat Getting Started
 
-#### 🧩 Prerequisites
+#### 🧩 CDRGoat Prerequisites
 - Terraform ver. 1.5 or above
 - AWS account (sandbox recommended, do not run in production)  
 - AWS CLI configured with appropriate credentials  
 - jq utility for parsing JSON output  
 
-#### ⚙️ Install Dependencies
+#### ⚙️ CDRGoat Install Dependencies
 macOS
 ```bash
 brew install terraform awscli jq
@@ -45,7 +45,7 @@ Linux
 sudo apt update && sudo apt install -y terraform awscli jq
 ```
 
-#### 🗂️ Simulation Scenarios
+#### 🗂️ CDRGoat Simulation Scenarios
 The simulation scenarios are organized by folder under `scenarios/`.  
 Each folder includes:  
 - A **Terraform plan** to provision the environment for the scenario.  
@@ -53,7 +53,7 @@ Each folder includes:
 
 Navigate into a scenario folder to run Terraform and execute the attack script as described below.
 
-#### 🏗️ Deploy
+#### 🏗️ CDRGoat Deploy
 Before deploying, download the provided Terraform configuration and attack script to the machine where you will run the attack steps.
 
 Use the provided Terraform configuration to deploy the full lab environment.
@@ -87,7 +87,7 @@ chmod +x attack.sh
 
 ![attack](./assets/attack.png)
 
-#### 🧹 Clean Up
+#### 🧹 CDRGoat Clean Up
 When you are finished, destroy all resources to avoid ongoing costs. This will tear down the entire lab environment including all compute, networking, and IAM components created during deployment.
 
 ```bash
@@ -96,7 +96,7 @@ terraform destroy -var='attack_whitelist=[]' -auto-approve
 
 &nbsp;
 
-## 📖 Usage Guide
+## 📖 CDRGoat Usage Guide
 Terraform commands you’ll use most often:  
 
 ```bash
@@ -109,25 +109,25 @@ terraform destroy   # clean up resources
 ***
 &nbsp;
 
-## Contributing
+## CDRGoat Contributing
 We welcome contributions! You can submit pull requests for:  
 - New scenarios  
 - Bug fixes  
 - Documentation improvements
   
 &nbsp;
-## 💰 Cost
+## 💰 CDRGoat Cost
 Each scenario is designed with minimal cloud resources to reduce expenses and limit blast radius.  
 However, costs may still accrue while environments are running. To avoid unnecessary charges, always shut down and destroy the environment when you are finished.
 
 &nbsp;
 
-## 👥 Contributors
+## 👥 CDRGoat Contributors
 - Petr Zuzanov - Principal Security Researcher, Stream Security
 - David Moss – Product Manager, Stream Security
 
 &nbsp;
 
-## ⚖️ Disclaimer
+## ⚖️ CDRGoat Disclaimer
 This content is provided for educational and informational purposes only. Stream Security’s CDRGoat is provided as-is without warranties of any kind. By using this project you accept full responsibility for all outcomes. Scenarios are intentionally vulnerable and must only be deployed in isolated, non-production accounts. Stream Security does not guarantee the accuracy or completeness of the content and assumes no liability for any damages resulting from its use.
 Stream Security does not endorse or condone any illegal activity and disclaims any liability arising from misuse of the material. Stream Security and project contributors assume no liability for misconfiguration or unintended consequences, including any illegal activity. Ensuring safe and appropriate use is your responsibility.
