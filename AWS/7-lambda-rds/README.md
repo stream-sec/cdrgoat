@@ -17,7 +17,7 @@ This exercise highlights the dangers of poor secret management, overly permissiv
 - Lambda function — stores AWS keys in environment variables
 
 **Serverless**
-- Lambda — permissions to list/describe functions
+- Lambda — permissions to list/describe RDS
 
 **Storage / Database**
 - RDS instance — stores sensitive data, manipulated by attacker
