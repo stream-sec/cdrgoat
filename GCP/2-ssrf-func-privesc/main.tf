@@ -53,7 +53,7 @@ resource "google_service_account" "streamgoat_vmb_sa" {
 
 resource "google_project_iam_custom_role" "project_metadata_setter" {
   role_id     = "projectMetadataSetter"
-  title       = "Project Metadata Setter"
+  title       = "StreamGoat Project Metadata Setter"
   description = "Custom role to set project-level metadata, including SSH keys"
   project     = data.google_client_config.current.project
   permissions = [

@@ -20,7 +20,6 @@ This scenario demonstrates a multi-stage GCP compromise in which an attacker exp
 
 **IAM / Service Accounts and Roles**
 - Service Accounts assigned to VM-A with permissions to list instances and modify their Metadata
-- Service Accounts assigned to VM-A with permissions to list instances and modify their Metadata
 
 &nbsp;
 
@@ -57,8 +56,7 @@ Linux
 sudo apt update && sudo apt install -y terraform jq
 ```
 
-To install **gcloud** cli tool please check official documentation: 
-https://docs.cloud.google.com/sdk/docs/install
+To install **gcloud** cli tool please check official documentation: https://docs.cloud.google.com/sdk/docs/install
 
 #### Deploy
 
