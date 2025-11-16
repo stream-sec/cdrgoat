@@ -51,6 +51,7 @@ banner() {
   printf "  • Step 4. Cloud Functions Enumeration & Source Extraction\n"
   printf "  • Step 5. Replace Code & Trigger Enumeration Function\n"
   printf "  • Step 6. Post-Exploitation Privilege Review\n"
+  printf "  • Step 7. Removing items we created during compromitation (metadata, cloud function, local temporary files)\n"
 
 }
 banner
@@ -485,3 +486,14 @@ jq -r --arg sa "serviceAccount:$FULLADMIN_SA" '
 printf "\nGreat! We've confirmed that the service account ${YELLOW}'streamgoat-sa-fulladmin'${RESET} is privileged - we now have control over the entire project.\n"
 
 read -rp "Step 6 complete. Press Enter to proceed..."
+
+#############################################
+# Step 7. Cleanup
+#############################################
+
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 7. Removing items we created during compromitation (metadata, cloud function, local temporary files)  ===" "${RESET}"
+
+set +e
+step "Removing localy stored file in /tmp/.streamgoat"
+rm -rf /tmp/.streamgoat
+set -e
