@@ -28,6 +28,11 @@ The attacker’s objective is to compromise an internet-exposed VM instance, use
 
 &nbsp;
 
+## 🖼️ Diagram
+<img src="./diagram.png" alt="Diagram" width="600" style="display:block; margin:auto;" />
+
+&nbsp;
+
 ## 🗡️ Attack Walkthrough
 - **Initial Access** – Exploit a vulnerable web application on VM-A to achieve remote code execution.
 - **Credential Harvesting** – Obtain IAM role credentials from the instance metadata service.
