@@ -29,7 +29,7 @@ The attacker’s objective is to compromise an internet-exposed VM instance, use
 &nbsp;
 
 ## 🖼️ Diagram
-<img src="./diagram.png" alt="Diagram" width="600" style="display:block; margin:auto;" />
+![Diagram](./diagram.png)
 
 &nbsp;
 
