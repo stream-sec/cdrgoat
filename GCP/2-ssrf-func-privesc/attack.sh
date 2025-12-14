@@ -45,7 +45,7 @@ spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true
 banner() {
   printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 2              ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
-  printf "  • Step 1. Exploitation of Web RCE, metadata stealing\n"
+  printf "  • Step 1. Exploitation of SSRF+CRLF, metadata stealing\n"
   printf "  • Step 2. Permission enumeration for stolen metadata\n"
   printf "  • Step 3. Access via compute.instances.setMetadata\n"
   printf "  • Step 4. Review Role and Permissions assigned on VMb\n"
@@ -68,9 +68,9 @@ done
 read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
 
 #############################################
-# Step 1. Exploitation of Web RCE, metadata stealing
+# Step 1. Exploitation of SSRF+CRLF, metadata stealing
 #############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Exploitation of Web RCE, metadata stealing  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Exploitation of SSRF+CRLF, metadata stealing  ===" "${RESET}"
 is_valid_ipv4() {
   local ip="$1" o1 o2 o3 o4
   [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1

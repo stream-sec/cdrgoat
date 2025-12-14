@@ -26,6 +26,11 @@ Demonstrate how an SSRF vulnerability can be leveraged to gain GCP credentials, 
 
 &nbsp;
 
+## 🖼️ Diagram
+![Diagram](./diagram.png)
+
+&nbsp;
+
 ## 🗡️ Attack Walkthrough
 - **Initial Access** - Exploit SSRF+CRLF in VM-A’s application to access the Instance Metadata Service and obtain IAM role credentials.
 - **Lateral Movement** - Use stolen VM-A credentials to issue inject into project Metadata and start a session on VM-B.
