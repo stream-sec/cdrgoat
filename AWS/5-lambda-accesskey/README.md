@@ -1,7 +1,7 @@
 # 5. Privilege Escalation via CreateAccessKey
 
 ## 🗺️ Overview
-This scenario demonstrates how an SSRF vulnerability in a public-facing EC2 instance can be chained with overly permissive Lambda privileges to achieve full AWS account compromise. After exploiting the vulnerable web application to access the Instance Metadata Service, the attacker retrieves IAM role credentials that grant lambda:* permissions, enabling them to create, list, modify, and invoke Lambda functions. During enumeration, they identify a Lambda used for user management and infer that it has iam:Create* permissions. By attempting to generate new access keys for guessed IAM usernames, the attacker successfully creates keys for multiple accounts, one of which belongs to an administrator. With the new admin credentials, they gain persistent, full account-wide control, demonstrating the compounded risks of SSRF exploitation, misconfigured IAM roles, and over-privileged Lambda functions.
+This scenario demonstrates how a leaked long-term AWS access key for a low-privileged user that includes broad Lambda permissions can be abused to escalate privileges. An attacker with the leaked keys enumerates Lambda functions, downloads and inspects function code, and—because the compromised user can update Lambda code—replaces the function with payloads that exercise IAM actions (create/delete user, group, role, policy) and attempt to create access keys for guessed usernames. Any successfully-created access keys can be validated and used to discover higher-privilege accounts (for example, an Administrator-attached user), providing persistent project-wide access.
 
 &nbsp;
 
@@ -17,7 +17,13 @@ This scenario demonstrates how an SSRF vulnerability in a public-facing EC2 inst
 &nbsp;
 
 ## 🎯 Scenario Goals
-Demonstrate how an SSRF vulnerability can lead to credential theft, abuse of over-privileged Lambda permissions, and eventual compromise of the AWS root account.
+Demonstrate how a leaked long-term access key with broad Lambda permissions can be misused to:
+- enumerate and download Lambda code
+- replace Lambda code to run reconnaissance using the Lambda's execution role
+- test and exercise IAM creation permissions (users/groups/policies/roles)
+- create AccessKeys for guessed users and validate whether any of them have Administrator-level privileges
+
+This shows how improper IAM scoping and over-permissive Lambda access can lead to privilege escalation and persistent compromise.
 
 &nbsp;
 
@@ -27,16 +33,21 @@ Demonstrate how an SSRF vulnerability can lead to credential theft, abuse of ove
 &nbsp;
 
 ## 🗡️ Attack Walkthrough
-- **Initial Access** - Exploit SSRF in the public web app to query IMDS and steal the EC2 role’s temporary credentials.
-- **Abuse EC2 Role** - Use those credentials (role has lambda:*) to list and invoke Lambda functions.
-- **Discovery** - Find a user-management Lambda that has iam:CreateAccessKey (or similar IAM write) permissions.
-- **Privilege Escalation** - Invoke or modify that Lambda to create access keys for guessed IAM usernames (one is an admin/root).
-- **Persistence/Takeover** - Use the newly created admin/root keys for persistent, full account control.
+- **Initial Access** - Attacker receives the Terraform-outputted access key
+- **Enumerate Permissions** - Use the leaked keys to call `aws sts get-caller-identity` and enumerate available services; confirm broad Lambda permissions.
+- **Inspect User Policies** - Query inline and attached policies to understand what the compromised user can do.
+- **Enumerate Lambda Functions** - List Lambda functions and download the deployment package to review existing logic (the bundled function creates users/groups when invoked).
+- **Replace Lambda Code for Enumeration** - Update the Lambda to run a suite of API checks using the Lambda's execution role (step 5). This allows you to discover what the Lambda role can access.
+- **Create/Delete Tests** - Replace the Lambda with code that performs create/delete operations for user, group, policy, and role to confirm Create/Delete behavior.
+- **CreateAccessKey Guessing** - Replace the Lambda with payload that attempts key creation for a list of guessed usernames (StreamGoat-User-<name> candidates). If successful, the Lambda returns newly-created credentials.
+- **Validate Captured Keys** - Use any captured keys to authenticate, enumerate attached policies, and detect administrative privileges (e.g., `AdministratorAccess`).
+- **Persistence & Takeover** - If Administrator-level credentials are found, the attacker obtains persistent, full account control.
+
 
 &nbsp;
 
 ## 📈 Expected Results
-**Successful Completion** - Root user receives a newly created access key, granting the attacker persistent, full account-wide administrative privileges.  
+**Successful Completion** - The attacker captures newly-created credentials for a user with Administrator-level privileges (or equivalent), granting persistent, full account-wide control.
 
 &nbsp;
 
