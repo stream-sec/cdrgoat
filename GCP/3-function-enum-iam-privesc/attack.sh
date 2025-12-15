@@ -475,9 +475,9 @@ if [ "$IAM_POLICY_RESPONSE" != "200" ]; then
 fi
 
 ok "IAM policy retrieved. Parsing roles for: $FULLADMIN_SA"
-printf "Assigned roles:\n"
+printf "Assigned roles:\n${MAGENTA}"
 # Extract roles for the targeted service account
-${MAGENTA}
+
 jq -r --arg sa "serviceAccount:$FULLADMIN_SA" '
   .bindings[] | select(.members[]? == $sa) |
   "- Role: \(.role)"

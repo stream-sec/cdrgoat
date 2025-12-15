@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/google"
       version = ">= 4.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
   }
 
   required_version = ">= 1.2.0"
@@ -15,6 +19,11 @@ provider "google" {
 }
 
 data "google_client_config" "current" {}
+
+# Generate a short random suffix for role_id to avoid conflicts with roles
+resource "random_id" "role_suffix" {
+  byte_length = 2
+}
 
 # Archive inline Python code into .zip
 data "archive_file" "function_zip" {
@@ -61,7 +70,8 @@ resource "google_storage_bucket_object" "function_object" {
 
 resource "google_project_iam_custom_role" "streamgoat_maintainer_role" {
   project     = data.google_client_config.current.project
-  role_id     = "streamgoatRoleMaintainer"
+  # Append a short random suffix to avoid collisions with prior deleted roles
+  role_id     = "streamgoatRoleMaintainer_${random_id.role_suffix.hex}"
   title       = "StreamGoat Function Maintainer"
   description = "Limited maintainer for Cloud Functions and IAM metadata"
   stage       = "GA"
@@ -194,10 +204,6 @@ resource "google_service_account_key" "maintainer_key" {
 }
 
 # Outputs
-output "cloud_function_url" {
-  value = google_cloudfunctions_function.streamgoat_function.https_trigger_url
-}
-
 output "maintainer_service_account_key_json" {
   description = "Private key for streamgoat-sa-maintainer (base64-encoded)"
   value       = google_service_account_key.maintainer_key.private_key

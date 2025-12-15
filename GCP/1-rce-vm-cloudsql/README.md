@@ -54,11 +54,11 @@ The attacker’s objective is to compromise an internet-exposed VM instance, use
 
 MacOS
 ```bash
-brew install terraform jq
+brew install terraform gcloud jq curl zip
 ```
 Linux
 ```bash
-sudo apt update && sudo apt install -y terraform jq
+sudo apt update && sudo apt install -y terraform jq curl zip
 ```
 
 To install **gcloud** cli tool please check official documentation: https://docs.cloud.google.com/sdk/docs/install
