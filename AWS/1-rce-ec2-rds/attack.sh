@@ -270,7 +270,7 @@ ssm_probe() {
           --document-name AWS-RunShellScript \
           --parameters commands='["whoami"]' \
           --instance-ids "$iid" \
-          --comment "perm-probe $(date -Is)" 2>&1)"
+          --comment "perm-probe $(date)" 2>&1)"
   rc=$?
   set -e
 
