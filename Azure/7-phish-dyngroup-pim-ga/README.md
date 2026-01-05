@@ -1,4 +1,3 @@
-````markdown
 # 7. Phishing — Dynamic Group & PIM Abuse (OAuth Device Code)
 
 ## 🗺️ Overview
@@ -107,4 +106,3 @@ terraform destroy -var="subscription_id=$(az account show --query id -o tsv)" -a
 ```
 
 If you prefer, you can manually delete the role eligibility request in the Azure portal (or via `az`), then run `terraform destroy` as usual.
-````

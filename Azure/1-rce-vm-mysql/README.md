@@ -1,4 +1,3 @@
-````markdown
 # 1. RCE on VM to MySQL Pivot
 
 ## 🗺️ Overview
@@ -94,4 +93,3 @@ When you are finished, destroy all resources to avoid ongoing costs. This will t
 ```bash
 terraform destroy -var='attack_whitelist=[]' -auto-approve
 ```
-````
