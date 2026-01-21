@@ -189,7 +189,6 @@ while :; do
 done
 
 ok "OAuth authentication completed — access token received"
-echo "$ACCESS_TOKEN"
 
 ################################################################################
 # Step 1c. Phishing campaign — OAuth Device Code flow (validation)
