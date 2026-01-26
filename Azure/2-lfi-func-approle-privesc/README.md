@@ -16,7 +16,7 @@ This scenario demonstrates a multi-stage Azure compromise that begins with explo
   - Reader on Resource Group (enumeration)
   - Storage Blob Data Reader (read backup blobs)
 - App Registration with `AppRoleAssignment.ReadWrite.All` (privilege escalation vector)
-- Test user (Simba) as escalation target
+- Test user (Jafar) as escalation target
 
 **Storage**
 - Blob container with `app_backup_info.txt` containing leaked client_id/secret
@@ -53,26 +53,6 @@ The attacker's objective is to exploit a vulnerable Function App, harvest Manage
 
 ## 📈 Expected Results
 **Successful Completion** — Starting from a vulnerable Function App, the attacker escalates privileges through credential theft and Graph API abuse to achieve Global Administrator access in the Azure AD tenant.
-
-&nbsp;
-
-## ⚠️ Privilege Escalation Path Explained
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  AppRoleAssignment.ReadWrite.All                                        │
-│  ↓                                                                      │
-│  Can assign ANY application permission to ANY service principal         │
-│  ↓                                                                      │
-│  Grant self: RoleManagement.ReadWrite.Directory                         │
-│  ↓                                                                      │
-│  Can manage directory roles (add/remove members)                        │
-│  ↓                                                                      │
-│  Add user "Simba" to Global Administrator role                          │
-│  ↓                                                                      │
-│  FULL TENANT COMPROMISE                                                 │
-└─────────────────────────────────────────────────────────────────────────┘
-```
 
 &nbsp;
 
@@ -116,12 +96,4 @@ When finished, destroy all resources:
 
 ```bash
 terraform destroy -var='attack_whitelist=[]' -auto-approve
-```
-
-**Important:** If you successfully escalated Simba to Global Administrator during the attack, manually remove them from that role before destroying:
-
-```bash
-# Remove Simba from Global Administrator (if escalation was successful)
-az rest --method DELETE \
-  --uri "https://graph.microsoft.com/v1.0/directoryRoles/roleTemplateId=62e90394-69f5-4237-9190-012177145e10/members/$(terraform output -raw disney_user_object_id)/$ref"
 ```
