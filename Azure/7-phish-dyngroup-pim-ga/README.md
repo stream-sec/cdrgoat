@@ -73,11 +73,10 @@ This scenario requires specifying a subscription ID when running Terraform:
 ```bash
 terraform init
 terraform apply -var="subscription_id=$(az account show --query id -o tsv)" -auto-approve
-az ad app permission admin-consent --id "$(terraform output -raw devops_app_client_id)"
 terraform output --json | jq -r '"User credentials for phishing simulation\nUsername: \(.lara_croft_credentials.value.user_principal_name)\nPassword: \(.lara_croft_credentials.value.password)"'
 ```
 
-**Note about admin consent:** The `az ad app permission admin-consent --id "<app-id>"` command grants tenant-wide admin consent for the application's configured API permissions. This step must be executed by a tenant Global Administrator (or a role permitted to grant admin consent). If you cannot run this command, ask a tenant admin to grant consent via the Azure Portal or run the equivalent `az` command for you. After granting consent you can verify the app's granted permissions with `az ad app permission list --id <app-id>`.
+**Note:** Admin consent for the application's API permissions is granted automatically by Terraform during deployment. The user running Terraform must have sufficient privileges (Global Administrator or a role permitted to grant admin consent).
 
 At the end of the deployment Terraform will display output values (e.g. `devops_app_client_id` and test credentials for a lab user). Save these details — you will need them for the phishing and post-phish steps in the attack script.
 
