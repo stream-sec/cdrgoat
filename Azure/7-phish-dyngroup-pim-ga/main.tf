@@ -267,6 +267,24 @@ resource "azuread_service_principal" "devops_ppl_mgmt_test" {
   client_id = azuread_application.devops_ppl_mgmt_test.client_id
 }
 
+data "azuread_service_principal" "msgraph" {
+  client_id = "00000003-0000-0000-c000-000000000000" # Microsoft Graph
+}
+
+# Grant admin consent for RoleManagement.ReadWrite.Directory
+resource "azuread_app_role_assignment" "devops_rolemanagement" {
+  app_role_id         = "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8" # RoleManagement.ReadWrite.Directory
+  principal_object_id = azuread_service_principal.devops_ppl_mgmt_test.object_id
+  resource_object_id  = data.azuread_service_principal.msgraph.object_id
+}
+
+# Grant admin consent for Directory.Read.All
+resource "azuread_app_role_assignment" "devops_directory_read" {
+  app_role_id         = "7ab1d382-f21e-4acd-a863-ba3e13f7da61" # Directory.Read.All
+  principal_object_id = azuread_service_principal.devops_ppl_mgmt_test.object_id
+  resource_object_id  = data.azuread_service_principal.msgraph.object_id
+}
+
 resource "azuread_application_password" "devops_ppl_mgmt_secret" {
   application_id = azuread_application.devops_ppl_mgmt_test.id
   display_name   = "terraform-generated"
