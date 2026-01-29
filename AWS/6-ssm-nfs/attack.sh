@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 6              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 6               ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Configuring AWS credentials\n"
   printf "  • Step 2. Permission enumeration for leaked credentials\n"
@@ -110,6 +110,15 @@ while :; do
 done
 printf "\n"
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "This scenario demonstrates IAM policy versioning abuse combined\n"
+printf "with SSM lateral movement and NFS data exfiltration.\n\n"
+
 #############################################
 # Step 2. Permission enumeration for leaked credentials
 #############################################
@@ -152,6 +161,16 @@ try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFI
 printf "\nOK, it seems our permissions are quite limited. Let's try to get some more info about our user...\n"
 printf "\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Most services returned [DENY] - appears to be restricted.\n\n"
+printf "However, examining IAM policy details may reveal:\n"
+printf "  • Policy versions with different permissions\n"
+printf "  • Escalation paths through IAM itself\n\n"
+
 #############################################
 # Step 3. Inspecting IAM policies for compromised user
 #############################################
@@ -227,6 +246,18 @@ fi
 printf "\nBased on what we see above we may switch to version 2, get the list of EC2, and using version 3 executing commands on them. Lets try...\n"
 printf "\n"
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered IAM policy version abuse opportunity.\n\n"
+printf "AWS policies can have up to 5 versions. With ${MAGENTA}SetDefaultPolicyVersion${RESET},\n"
+printf "we can switch to a more privileged version:\n"
+printf "  • v1 (current): Limited permissions\n"
+printf "  • v2: Includes EC2 DescribeInstances\n"
+printf "  • v3: Includes SSM SendCommand\n\n"
+
 #############################################
 # Step 4. Switching between policy versions to gain command execution
 #############################################
@@ -304,6 +335,16 @@ fi
 printf "\nGood result! No we can pivot into the network and try to collect information about local network.\n"
 printf "\n"
 read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We switched policy versions to escalate privileges:\n"
+printf "  1. Switched to v2 → Gained EC2 DescribeInstances\n"
+printf "  2. Switched to v3 → Gained SSM SendCommand\n\n"
+printf "SSM allows command execution without SSH access,\n"
+printf "bypassing network security controls.\n\n"
 
 #############################################
 # Step 5. Internal network reconnaissance with Nmap
@@ -388,7 +429,16 @@ else
   exit 1
 fi
 printf "\n"
-read -r -p "Step 5 completed. Press Enter to proceed..." _ || true
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We performed internal network reconnaissance via SSM.\n\n"
+printf "Installed nmap and scanned the subnet for interesting services.\n"
+printf "Found host with port 2049 open (${MAGENTA}NFS${RESET})!\n\n"
+printf "NFS/EFS often contains sensitive data with weak access controls.\n\n"
 
 #############################################
 # Step 6. Mount and explore discovered NFS share
@@ -463,5 +513,30 @@ for file in $FILENAMES; do
 done
 
 printf "We got access to sensitive data stored in internal EFS.\n"
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Validated leaked IAM user credentials\n"
+printf "  2. Discovered IAM policy with multiple versions\n"
+printf "  3. Switched to v2 → Gained EC2 DescribeInstances\n"
+printf "  4. Switched to v3 → Gained SSM SendCommand\n"
+printf "  5. Network reconnaissance via nmap (found NFS on port 2049)\n"
+printf "  6. Mounted EFS and exfiltrated sensitive data\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Access to sensitive data on internal EFS\n"
+printf "  • IAM policy version abuse for privilege escalation\n"
+printf "  • SSM-based lateral movement\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • SetDefaultPolicyVersion API calls\n"
+printf "  • SSM command executions (especially nmap, mount)\n"
+printf "  • NFS/EFS mount activity from unexpected instances\n"
+printf "  • Policy version changes in CloudTrail\n\n"
+
 printf "\n"
 read -r -p "Scenario 6 completed. Press Enter to finish..." _ || true

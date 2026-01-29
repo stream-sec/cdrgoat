@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 8              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===          CDRGoat Azure - Scenario 8              ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Phishing campaign — OAuth Device Code flow\n"
   printf "  • Step 2. Post-compromise — Outlook Inbox Access\n"
@@ -204,7 +204,21 @@ UPN="$(echo "$TOKEN_PAYLOAD" | jq -r '.upn // .preferred_username')"
 info "Authenticated user context:"
 printf "  • Tenant ID : %s%s%s\n" "${YELLOW}" "${TENANT_ID}" "${RESET}"
 printf "  • User OID  : %s%s%s\n" "${YELLOW}" "${USER_OID}" "${RESET}"
-printf "  • UPN       : %s%s%s\n\n" "${YELLOW}" "${UPN}" "${RESET}"
+printf "  • UPN       : %s%s%s\n" "${YELLOW}" "${UPN}" "${RESET}"
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "OAuth Device Code phishing is a powerful initial access technique because:\n\n"
+printf "  • ${MAGENTA}No malicious link${RESET}: Victim authenticates on legitimate Microsoft page\n"
+printf "  • ${MAGENTA}Bypasses link scanning${RESET}: Email security tools don't flag the microsoft.com URL\n"
+printf "  • ${MAGENTA}Works with MFA${RESET}: The victim completes their normal MFA challenge\n"
+printf "  • ${MAGENTA}Token theft${RESET}: Attacker receives both access and refresh tokens\n\n"
+printf "The refresh token allows long-term access — the attacker can request new\n"
+printf "access tokens for different Microsoft APIs without re-authenticating.\n\n"
+printf "This technique abuses legitimate OAuth flows, making it difficult to detect\n"
+printf "without monitoring for anomalous device code requests or unusual token usage.\n\n"
 
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
@@ -290,7 +304,22 @@ printf "%s\n" "-----------------------------------------------------------------
 ok "Mailbox reconnaissance completed"
 info "Note: Message IDs [1-${MSG_COUNT}] saved for use in Step 5"
 
-read -r -p "Step 2 completed. Press Enter to continue (or Ctrl+C to abort)..." _ || true
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "With the stolen OAuth token, we accessed the victim's Outlook mailbox.\n"
+printf "Microsoft Graph API provides full programmatic access to:\n\n"
+printf "  • ${MAGENTA}Inbox/Sent Items${RESET}: Read all email content and attachments\n"
+printf "  • ${MAGENTA}Folders${RESET}: Navigate through all mailbox folders\n"
+printf "  • ${MAGENTA}Search${RESET}: Query emails by keyword, sender, date, etc.\n\n"
+printf "Attackers commonly perform mailbox reconnaissance to:\n"
+printf "  • Find credentials shared via email (password resets, welcome emails)\n"
+printf "  • Identify business relationships for BEC (Business Email Compromise)\n"
+printf "  • Gather intelligence for further attacks\n"
+printf "  • Locate sensitive documents and data\n\n"
+
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 
 ################################################################################
@@ -336,7 +365,7 @@ MATCH_COUNT="$(echo "$SEARCH_RESP" | jq '.value | length')"
 
 if [ "$MATCH_COUNT" -eq 0 ]; then
   info "No messages found containing keyword: password"
-  read -r -p "Step 3 completed. Press Enter to continue (or Ctrl+C to abort)..." _ || true
+  read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
   exit 0
 fi
 
@@ -362,7 +391,23 @@ printf "%s\n" "-----------------------------------------------------------------
 
 ok "Mailbox keyword search completed — potential credential exposure identified"
 
-read -r -p "Step 3 completed. Press Enter to continue (or Ctrl+C to abort)..." _ || true
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We searched the mailbox for emails containing the keyword 'password'.\n"
+printf "This is a common attacker technique to find:\n\n"
+printf "  • ${MAGENTA}Password reset emails${RESET}: Temporary credentials from IT support\n"
+printf "  • ${MAGENTA}Welcome/onboarding emails${RESET}: Initial credentials for new accounts\n"
+printf "  • ${MAGENTA}Shared credentials${RESET}: Passwords shared between colleagues\n"
+printf "  • ${MAGENTA}Service accounts${RESET}: API keys or service credentials\n\n"
+printf "Common search terms attackers use:\n"
+printf "  • 'password', 'credential', 'secret', 'API key'\n"
+printf "  • 'login', 'username', 'account'\n"
+printf "  • 'SSN', 'credit card', 'bank account'\n\n"
+printf "This highlights why ${YELLOW}email should never contain plaintext credentials${RESET}.\n\n"
+
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
 # Step 4. Post-compromise activity — Calendar reconnaissance
@@ -410,7 +455,7 @@ EVENT_COUNT="$(echo "$CAL_RESP" | jq '.value | length')"
 
 if [ "$EVENT_COUNT" -eq 0 ]; then
   info "No meetings scheduled in the next 10 days"
-  read -r -p "Step 4 completed. Press Enter to continue (or Ctrl+C to abort)..." _ || true
+  read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
   exit 0
 fi
 
@@ -451,7 +496,22 @@ printf "%s\n" "-----------------------------------------------------------------
 
 ok "Calendar reconnaissance completed"
 
-read -r -p "Step 4 completed. Press Enter to continue (or Ctrl+C to abort)..." _ || true
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Calendar reconnaissance provides valuable intelligence for attackers:\n\n"
+printf "  • ${MAGENTA}Meeting schedules${RESET}: Know when target is busy/available\n"
+printf "  • ${MAGENTA}Attendee lists${RESET}: Identify key personnel, executives, partners\n"
+printf "  • ${MAGENTA}Meeting links${RESET}: Join calls uninvited (if links not protected)\n"
+printf "  • ${MAGENTA}Travel plans${RESET}: Out-of-office periods for physical attacks\n"
+printf "  • ${MAGENTA}Project names${RESET}: Internal codenames and initiatives\n\n"
+printf "This information enables more targeted attacks:\n"
+printf "  • Spear phishing with internal meeting context\n"
+printf "  • Impersonating executives during key meetings\n"
+printf "  • Social engineering with insider knowledge\n\n"
+
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 ################################################################################
 # Step 5. Post-compromise activity — Modify email (rare behavior)
@@ -581,7 +641,45 @@ ok "Attachment successfully added to selected email"
 ################################################################################
 rm -rf "${WORKDIR}"
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Adding an attachment to an existing email is ${RED}very rare attacker behavior${RESET}.\n"
+printf "This action generates distinctive signals in Microsoft 365 audit logs:\n\n"
+printf "  • ${MAGENTA}MailItemsAccessed${RESET}: Email access with modification intent\n"
+printf "  • ${MAGENTA}FileUploaded${RESET}: Attachment upload to existing message\n"
+printf "  • ${MAGENTA}Update${RESET}: Message modification event\n\n"
+printf "Legitimate users rarely modify received emails.\n"
+printf "This behavior pattern should trigger high-confidence alerts.\n\n"
+printf "Detection opportunities:\n"
+printf "  • Monitor for attachment additions to received (non-draft) emails\n"
+printf "  • Alert on programmatic mailbox access via Graph API\n"
+printf "  • Correlate device code authentication with subsequent mailbox activity\n\n"
+
+################################################################################
+# Final Summary
+################################################################################
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
-printf "\n%s%s%s\n" "${BOLD}${GREEN}" "✅ All steps completed successfully!" "${RESET}"
-printf "\n%s%s%s\n" "${YELLOW}" "📬 Please check the victim's mailbox to verify the attachment was added." "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. OAuth Device Code phishing — obtained victim's tokens\n"
+printf "  2. Mailbox access — enumerated recent emails\n"
+printf "  3. Credential hunting — searched for sensitive keywords\n"
+printf "  4. Calendar reconnaissance — gathered meeting intelligence\n"
+printf "  5. Email modification — added attachment (rare behavior)\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full access to victim's mailbox (read/write)\n"
+printf "  • Potential credential theft from email content\n"
+printf "  • Business intelligence from calendar\n"
+printf "  • Ability to modify/forge email evidence\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • Unusual OAuth device code requests\n"
+printf "  • Graph API access to mailbox from new locations/devices\n"
+printf "  • Keyword searches in mailbox (password, credential, etc.)\n"
+printf "  • Modifications to received emails (attachments, content)\n\n"
+
+printf "%s%s%s\n" "${YELLOW}" "📬 Please check the victim's mailbox to verify the attachment was added." "${RESET}"
 printf "%s\n\n" "    Open the selected email and confirm the ZIP attachment is present."

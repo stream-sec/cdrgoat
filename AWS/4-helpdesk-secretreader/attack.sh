@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 4              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 4               ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Configuring aws credentials\n"
   printf "  • Step 2. Permission enumeration for leaked credentials\n"
@@ -109,6 +109,15 @@ while :; do
 done
 printf "\n"
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "This simulates credentials from a helpdesk or support user.\n"
+printf "These accounts often have overlooked escalation paths.\n\n"
+
 #############################################
 # Step 2. Permission enumeration for leaked credentials
 #############################################
@@ -151,6 +160,17 @@ try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFI
 printf "\nOK, it seems our permissions are quite limited. Let's try to get some more info about our user...\n"
 printf "\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Most services returned [DENY] - this appears to be a restricted account.\n\n"
+printf "When direct service access is limited, attackers focus on:\n"
+printf "  • What IAM permissions does this user have?\n"
+printf "  • What groups are they in?\n"
+printf "  • Are there escalation paths through IAM itself?\n\n"
+
 #############################################
 # Step 3. IAM Introspection & Escalation Discovery
 #############################################
@@ -214,6 +234,15 @@ for group in $USER_GROUPS; do
   fi
 done
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered the user has ${MAGENTA}iam:AddUserToGroup${RESET} permission.\n\n"
+printf "This allows self-promotion: if there's a more privileged group,\n"
+printf "we can add ourselves to it and inherit those permissions.\n\n"
+printf "Constraint: Can only add to groups matching StreamGoat-Group* prefix.\n\n"
+
 printf "\nWhat we can do with this information? The interesting permissions here is ${YELLOW}iam:AddUserToGroup${RESET}. We can add ourself to any other group which start with prefix ${YELLOW}StreamGoat-Group${RESET}\n"
 read -r -p "But we need to know group name. Lets try get the list of groups. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 # Step 3.4 Attempt to list all group names (expected to fail)
@@ -224,6 +253,16 @@ try "IAM ListGroups" aws iam list-groups --profile "$PROFILE" --output json
 printf "\nWell, this means we can not know if there is any other groups. But we may quess and try to bruteforce performing AddUserToGroup operation. If we receive an error - group doesn't exist. But if no error we have some luck.\n"
 printf "\n"
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Without iam:ListGroups, we cannot enumerate available groups.\n\n"
+printf "However, we can brute-force by trying AddUserToGroup:\n"
+printf "  • \"NoSuchEntity\" → Group doesn't exist\n"
+printf "  • Success → Group exists AND we're now a member!\n\n"
+
 #############################################
 # Step 4. Group brute-force + privilege escalation attempt
 #############################################
@@ -268,6 +307,15 @@ else
   done
 fi
 
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Group name brute-force succeeded!\n\n"
+printf "We joined ${MAGENTA}StreamGoat-Group-secretreaders${RESET}.\n"
+printf "This is privilege escalation through IAM - we gained new\n"
+printf "permissions without exploiting any service vulnerability.\n\n"
+
 printf "\nPerfect! We just added ourself to the group ${YELLOW}StreamGoat-Group-secretreaders${RESET}.\n"
 read -r -p "Lets check which permissions this group gives us. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
@@ -304,6 +352,17 @@ fi
 
 printf "\n"
 read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "The group grants Secrets Manager access:\n"
+printf "  • ${MAGENTA}secretsmanager:ListSecrets${RESET}\n"
+printf "  • ${MAGENTA}secretsmanager:GetSecretValue${RESET}\n\n"
+printf "We can now access secrets containing database credentials,\n"
+printf "API keys, and other sensitive data.\n\n"
+
 #############################################
 # Step 5. Dumping secrets from Secrets Manager
 #############################################
@@ -342,5 +401,29 @@ for secret in "${SECRET_NAMES[@]}"; do
     err "Failed to dump: $secret"
   fi
 done
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Validated leaked helpdesk user credentials\n"
+printf "  2. Enumerated permissions (limited service access)\n"
+printf "  3. Discovered iam:AddUserToGroup permission\n"
+printf "  4. Brute-forced group names via AddUserToGroup\n"
+printf "  5. Joined StreamGoat-Group-secretreaders\n"
+printf "  6. Exfiltrated secrets from Secrets Manager\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Access to organization's secrets\n"
+printf "  • IAM privilege escalation via group membership\n"
+printf "  • Potential credential theft from Secrets Manager\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • AddUserToGroup events, especially self-additions\n"
+printf "  • Secrets Manager GetSecretValue calls\n"
+printf "  • Group membership changes in CloudTrail\n"
+printf "  • Unusual IAM introspection patterns\n\n"
+
 printf "\n"
 read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit" _ || true
