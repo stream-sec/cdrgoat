@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 5              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 5               ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Configuring aws credentials\n"
   printf "  • Step 2. Permission enumeration for leaked credentials\n"
@@ -114,6 +114,15 @@ while :; do
 done
 printf "\n"
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "This scenario demonstrates an attack through Lambda functions\n"
+printf "when the user cannot list IAM users but can manipulate Lambda.\n\n"
+
 #############################################
 # Step 2. Permission enumeration for leaked credentials
 #############################################
@@ -158,6 +167,16 @@ printf "\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Permission enumeration revealed:\n"
+printf "  • ${MAGENTA}Lambda ListFunctions${RESET}: Succeeded\n"
+printf "  • Most IAM operations: Denied (can't list users)\n\n"
+printf "Lambda access is valuable because Lambda functions often have\n"
+printf "more privileged IAM roles than users.\n\n"
+
+#############################################
 # Step 3. Inspect IAM user policies for neo
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 3. Inspecting IAM policies for compromised user  ===" "${RESET}"
@@ -189,7 +208,18 @@ fi
 
 printf "\nIt shows that we may perform any operations against Lambdas. Lets see on next step what lambdas do we have...\n"
 printf "\n"
-read -r -p "Step 3 is completed. Press Enter to proceed to Lambda enumeration (or Ctrl+C to abort)..." _ || true
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "The user has ${MAGENTA}lambda:*${RESET} permissions:\n"
+printf "  • UpdateFunctionCode: Modify Lambda source code\n"
+printf "  • InvokeFunction: Execute Lambda functions\n"
+printf "  • GetFunction: Download Lambda source code\n\n"
+printf "Lambda functions execute with their own IAM roles, which may\n"
+printf "have different (more) permissions than our user.\n\n"
 
 #############################################
 # Step 4. Lambda enumeration + source code
@@ -256,7 +286,15 @@ rm -rf /tmp/streamgoat-scenario5-lambdadump
 cd - > /dev/null
 printf "\n\nWith ${YELLOW}lambda:*${RESET} we may modify configuration of the lambda. Lets upload the new code which will enumerate Lambda's privileges the same way we did on step 2.\n"
 printf "\n"
-read -r -p "Step 4 is completed. Press Enter to continue to exploitation... " _ || true
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We extracted Lambda source code using GetFunction.\n\n"
+printf "The code reveals it performs IAM operations like creating\n"
+printf "users and groups, hinting at IAM-related permissions.\n\n"
 
 #############################################
 # Step 5. Modify Lambda to enumerate under its role
@@ -422,7 +460,16 @@ rm -rf "$WORKDIR"
 cd - > /dev/null
 printf "\nIt seems Lambda doesn't have any specific permission set on it. However if we get back the original content of the Lambda, we may notice it was set to create User and Group. What if the Lambda has iam:Create* permissions set? Lets verify.\n"
 printf "\n"
-read -r -p "Step 5 is completed. Press Enter to continue to exploitation... " _ || true
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We injected enumeration code into the Lambda.\n\n"
+printf "When invoked, it runs API calls with the Lambda's IAM role.\n"
+printf "The original code suggested ${MAGENTA}iam:Create*${RESET} capabilities.\n\n"
+
 #############################################
 # Step 6. Lambda Create/Delete tests (User/Group/Policy/Role)
 #############################################
@@ -591,7 +638,17 @@ cd - > /dev/null
 
 printf "\nWe see some good result we may use. We see that not only User creation and group Creaton is allowed for Lambda, but Roles and Policies as well. It can make us thinking we have wildcard permissions set ${YELLOW}iam:Create*${RESET}. But unfortunately user we own doesn't have permissions to list existing users. Lambda doesn't have this permissions either. So what we can do? We can try performing operation of CreateAccessKey on guessed users based on format we know (StreamGoat-User-). If operation successful - we will receive new keys to pivot further.\n"
 printf "\n"
-read -r -p "Step 6 is completed. Press Enter to continue to exploitation... " _ || true
+read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "Lambda's role has ${MAGENTA}iam:Create*${RESET} permissions:\n"
+printf "  • CreateUser, CreateGroup, CreatePolicy, CreateRole\n\n"
+printf "If we have iam:Create*, we likely have ${MAGENTA}iam:CreateAccessKey${RESET}!\n"
+printf "This lets us create credentials for ANY user - even without ListUsers.\n\n"
+
 #############################################
 # Step 7. CreateAccessKey guessing via Lambda
 #############################################
@@ -713,7 +770,16 @@ cd - > /dev/null
 
 printf "\nTrying to guess username via creating of AccessKeys we were able to identify 3 users! Now lets use them to auth and check their permissions.\n"
 printf "\n"
-read -r -p "Step 7 is completed. Press Enter to cleanup access keys... " _ || true
+read -r -p "Step 7 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We brute-forced usernames via CreateAccessKey:\n"
+printf "  • NoSuchEntity → User doesn't exist\n"
+printf "  • Success → User exists AND we have their new credentials!\n\n"
+printf "Multiple users discovered with their access keys captured.\n\n"
 
 #############################################
 # Step 8. Validate captured keys and check for admin
@@ -810,7 +876,15 @@ fi
 
 printf "\nAnd we have a user with full admin privileges! Congratulations!\n"
 printf "\n"
-read -r -p "Step 8 is completed. Press Enter to cleanup access keys... " _ || true
+read -r -p "Step 8 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We validated captured credentials and found an admin user!\n\n"
+printf "One user has ${MAGENTA}AdministratorAccess${RESET} policy attached.\n"
+printf "We now have full account admin privileges.\n\n"
 
 #############################################
 # Step 9. Cleanup created access keys (admin-assisted)
@@ -914,4 +988,28 @@ ok "Temporary files cleaned up."
 
 echo
 printf "%s=== Lab cleanup complete ===%s\n" "${BOLD}${GREEN}" "${RESET}"
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Validated leaked user credentials with lambda:*\n"
+printf "  2. Enumerated Lambda functions and extracted source code\n"
+printf "  3. Injected enumeration code to discover iam:Create* permissions\n"
+printf "  4. Injected CreateAccessKey brute-force code\n"
+printf "  5. Guessed usernames and captured access keys\n"
+printf "  6. Found admin user credentials\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full AWS account administrator access\n"
+printf "  • Lambda role abuse for IAM operations\n"
+printf "  • Blind user enumeration via CreateAccessKey\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • CreateAccessKey events (especially multiple in sequence)\n"
+printf "  • Lambda code updates (UpdateFunctionCode)\n"
+printf "  • Unusual Lambda invocations\n"
+printf "  • Access key usage from unexpected locations\n\n"
 

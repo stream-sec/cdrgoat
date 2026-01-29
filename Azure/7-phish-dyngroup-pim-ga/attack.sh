@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 7              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===          CDRGoat Azure - Scenario 7              ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Phishing campaign — OAuth Device Code flow\n"
   printf "  • Step 2. Post-phish enumeration & dynamic group abuse\n"

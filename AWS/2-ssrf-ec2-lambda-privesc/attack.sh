@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 2              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 2               ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Exploitation of Web SSRF, IMDS stealing on EC2a\n"
   printf "  • Step 2. Permission enumeration for stolen IMDS\n"
@@ -151,6 +151,18 @@ aws configure set region                us-east-1 --profile default --profile "$
 spin_stop
 printf "\n"
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We exploited a Server-Side Request Forgery (SSRF) vulnerability to access IMDS.\n\n"
+printf "Unlike RCE, SSRF tricks the server into making requests on our behalf:\n"
+printf "  • ${MAGENTA}First request${RESET}: Retrieved IAM role name from IMDS\n"
+printf "  • ${MAGENTA}Second request${RESET}: Fetched full credentials for that role\n\n"
+printf "SSRF bypasses network security controls because the server's IP is trusted.\n"
+printf "IMDSv1 makes this trivially exploitable (no token required).\n\n"
+
 #############################################
 # End of Step 1
 #############################################
@@ -200,6 +212,17 @@ try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFI
 
 printf "\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We performed permission enumeration using the stolen credentials.\n\n"
+printf "The reconnaissance revealed:\n"
+printf "  • ${MAGENTA}EC2 DescribeInstances${RESET}: Shows other instances (EC2b)\n"
+printf "  • ${MAGENTA}SSM permissions${RESET}: Critical for lateral movement\n\n"
+printf "EC2b becomes our next target for pivoting deeper into the environment.\n\n"
+
 #############################################
 # End of Step 2
 #############################################
@@ -277,6 +300,17 @@ ssm_probe() {
 ssm_probe "$IID"
 
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We validated two lateral movement methods:\n\n"
+printf "  • ${MAGENTA}EC2 Instance Connect${RESET}: Upload SSH key for direct access\n"
+printf "  • ${MAGENTA}SSM SendCommand${RESET}: Execute commands via AWS APIs\n\n"
+printf "SSM is preferred because it works without inbound firewall rules.\n"
+printf "We now have command execution on EC2b for further reconnaissance.\n\n"
+
 #############################################
 # End of Step 3
 #############################################
@@ -301,6 +335,15 @@ spin_stop
 ok "awscli installation command triggered"
 printf "\n"
 read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We installed AWS CLI on EC2b via SSM to enumerate its permissions.\n\n"
+printf "Each EC2 instance may have different IAM permissions. By pivoting to EC2b,\n"
+printf "we gain access to a new set of capabilities that EC2a might not have.\n\n"
+
 #############################################
 # End of Step 4
 #############################################
@@ -374,6 +417,19 @@ printf "If we found Role with ${YELLOW}iam:AttachRolePolicy${RESET} we will be a
 printf "And then execute it having ${YELLOW}lambda:InvokeFunction${RESET}.\n"
 printf "\n"
 read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered EC2b's IAM role has powerful permissions:\n\n"
+printf "  • ${MAGENTA}lambda:CreateFunction${RESET}: Can create new Lambda functions\n"
+printf "  • ${MAGENTA}iam:PassRole${RESET}: Can assign IAM roles to created resources\n"
+printf "  • ${MAGENTA}lambda:InvokeFunction${RESET}: Can execute Lambda functions\n\n"
+printf "With CreateFunction + PassRole, we can create a Lambda with a more\n"
+printf "privileged role. If we find a role with iam:AttachRolePolicy,\n"
+printf "we can escalate to admin.\n\n"
+
 #############################################
 # End of Step 5
 #############################################
@@ -567,6 +623,17 @@ else
 fi
 printf "\n"
 read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered a role with ${MAGENTA}iam:AttachRolePolicy${RESET} permission.\n\n"
+printf "This permission allows attaching ANY managed policy (including\n"
+printf "AdministratorAccess) to ANY role. Combined with iam:PassRole,\n"
+printf "this enables full privilege escalation.\n\n"
+printf "The discovered role will be used to create a privilege escalation Lambda.\n\n"
+
 #############################################
 # End of Step 6
 #############################################
@@ -700,6 +767,17 @@ OUT="$(ssm_exec_stdout "$IID" "Create/Update ${LAMBDA_NAME}" "$commands_json")" 
 printf "%s\n" "$OUT" | sed -n '1,200p'
 printf "\n"
 read -r -p "Step 7 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We created a privilege escalation Lambda function.\n\n"
+printf "The Lambda is assigned a role with ${MAGENTA}iam:AttachRolePolicy${RESET}.\n"
+printf "When invoked, it will attach AdministratorAccess to EC2a's role.\n\n"
+printf "This is a ${CYAN}confused deputy attack${RESET}: EC2b doesn't have AttachRolePolicy,\n"
+printf "but it can create a Lambda with a role that does.\n\n"
+
 #############################################
 # End of Step 7
 #############################################
@@ -766,6 +844,16 @@ printf "%s\n" "$OUT" | sed -n '1,200p'
 #fi
 printf "\n"
 read -r -p "Step 8 is completed. Press Enter to finish (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We invoked the privilege escalation Lambda.\n\n"
+printf "The Lambda executed ${MAGENTA}attach_role_policy()${RESET} and attached\n"
+printf "AdministratorAccess to the EC2a role (StreamGoat-JumpHostRole).\n\n"
+printf "Our original SSRF-compromised role now has full admin access.\n\n"
+
 #############################################
 # End of Step 8
 #############################################
@@ -790,6 +878,16 @@ try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFI
 printf "\n${BOLD}${GREEN}Now we have permissions we didn't have before\n${RESET}"
 printf "\n"
 read -r -p "Step 9 is completed. Press Enter to finish (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We verified the privilege escalation was successful.\n\n"
+printf "Before: Many [DENY] results (limited permissions)\n"
+printf "After: All [OK] results (full admin access)\n\n"
+printf "With AdministratorAccess, we now have full account compromise.\n\n"
+
 #############################################
 # End of Step 9
 #############################################
@@ -814,5 +912,32 @@ rm -rf /tmp/streamgoat_eic_*
 #############################################
 # End of Step 10
 #############################################
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Exploited SSRF vulnerability to steal IMDS credentials\n"
+printf "  2. Enumerated permissions for compromised EC2a role\n"
+printf "  3. Lateral movement to EC2b via SSM\n"
+printf "  4. Discovered EC2b role with lambda:Create + iam:PassRole\n"
+printf "  5. Enumerated roles and found one with iam:AttachRolePolicy\n"
+printf "  6. Created PrivEsc Lambda with the privileged role\n"
+printf "  7. Invoked Lambda to attach AdministratorAccess to EC2a role\n"
+printf "  8. Verified full admin access\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full AWS account administrator access\n"
+printf "  • IAM privilege escalation via Lambda role chaining\n"
+printf "  • Confused deputy attack through iam:PassRole\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • SSRF attempts to internal metadata endpoints\n"
+printf "  • Lambda creation with privileged IAM roles\n"
+printf "  • AttachRolePolicy calls to sensitive roles\n"
+printf "  • Unusual SSM command patterns across instances\n\n"
+
 printf "\n"
 read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit" _ || true

@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===          StreamGoat - Scenario 2                ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===          CDRGoat Azure - Scenario 2              ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Exploit LFI on Function App\n"
   printf "  • Step 2. Harvest Managed Identity Token (SSRF)\n"

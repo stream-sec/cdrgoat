@@ -43,7 +43,7 @@ spin_start() {
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
 banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===            StreamGoat - Scenario 3              ===" "${RESET}"
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 3               ===" "${RESET}"
   printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
   printf "  • Step 1. Configuring aws credentials\n"
   printf "  • Step 2. Permission enumeration for leaked credentials\n"
@@ -112,6 +112,18 @@ done
 
 printf "\n"
 read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "Credentials may leak from various sources:\n"
+printf "  • Hardcoded in source code repositories\n"
+printf "  • Exposed in CI/CD logs or container images\n"
+printf "  • Leaked via misconfigured S3 buckets\n\n"
+printf "STS GetCallerIdentity confirms the credentials are valid.\n\n"
+
 #############################################
 # Step 2. Permission enumeration for leaked credentials
 #############################################
@@ -190,6 +202,18 @@ fi
 
 printf "\n"
 read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We enumerated permissions for the leaked credentials.\n\n"
+printf "Key findings:\n"
+printf "  • ${MAGENTA}iam:ListRoles${RESET}: Can enumerate IAM roles\n"
+printf "  • ${MAGENTA}lambda:*${RESET}: Full Lambda access (except CreateFunction)\n\n"
+printf "Even without CreateFunction, we can modify existing Lambda code\n"
+printf "using ${CYAN}UpdateFunctionCode${RESET} and invoke functions.\n\n"
+
 #############################################
 # End of Step 2
 #############################################
@@ -254,6 +278,16 @@ else
 fi
 printf "\n"
 read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We enumerated IAM roles and discovered:\n\n"
+printf "  • ${MAGENTA}StreamGoat-Role-admin${RESET}: Has AdministratorAccess attached!\n\n"
+printf "If we can assume this role or use it via Lambda, we achieve\n"
+printf "full account compromise.\n\n"
+
 #############################################
 # End of Step 3
 #############################################
@@ -304,7 +338,17 @@ for encoded in $lambda_functions; do
   done
 done
 
-read -r -p "Step 4 completed. Press Enter to continue..." _ || true
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We discovered StreamGoat-Lambda_2 with ${MAGENTA}sts:AssumeRole${RESET} permission.\n\n"
+printf "This allows the Lambda to assume other roles, including\n"
+printf "StreamGoat-Role-admin. If we modify the Lambda code, we can:\n"
+printf "  • Assume the admin role\n"
+printf "  • Grant our user permanent admin access\n\n"
 
 #############################################
 # End of Step 4
@@ -318,7 +362,17 @@ printf "In step 4, we identified the Lambda function ${MAGENTA}StreamGoat-Lambda
 printf "And finally, we saw ${CYAN}StreamGoat-Role-admin${RESET} role with full administrator privileges.\n"
 printf "Based on this information, our planned attack vector will be through modification of ${MAGENTA}StreamGoat-Lambda_2${RESET}:\n 1. AssumeRole ${CYAN}StreamGoat-Role-admin${RESET}\n 2. Assign Role ${CYAN}StreamGoat-Role-admin${RESET} to owned user ${YELLOW}StreamGoat-user${RESET}\n\n"
 
-read -r -p "Step 5 completed. Press Enter to continue..." _ || true
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We synthesized our findings into an attack plan:\n\n"
+printf "  1. Our user has ${MAGENTA}lambda:UpdateFunctionCode${RESET}\n"
+printf "  2. Lambda_2 has ${MAGENTA}sts:AssumeRole${RESET}\n"
+printf "  3. StreamGoat-Role-admin has ${MAGENTA}AdministratorAccess${RESET}\n\n"
+printf "Attack: Modify Lambda to AssumeRole admin and grant us admin access.\n\n"
 
 #############################################
 # End of Step 5
@@ -408,7 +462,17 @@ else
   err "Privilege escalation failed or not applied yet."
 fi
 printf "\n"
-read -r -p "Step 6 completed. Press Enter to continue..." _ || true
+read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We executed the privilege escalation attack:\n\n"
+printf "  1. Updated Lambda code via ${MAGENTA}UpdateFunctionCode${RESET}\n"
+printf "  2. Lambda assumed admin role and attached AdministratorAccess to our user\n"
+printf "  3. Verified with permission re-enumeration - all [OK]!\n\n"
+printf "StreamGoat-user now has full admin privileges.\n\n"
 
 
 #############################################
@@ -440,5 +504,29 @@ if echo "$attached" | grep -q "$POLICY_ARN"; then
 else
   ok "Cleanup verified — no elevated policy remains"
 fi
+################################################################################
+# Final Summary
+################################################################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${RESET}"
+
+printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
+printf "  1. Validated leaked IAM user credentials\n"
+printf "  2. Enumerated permissions (lambda:*, iam:ListRoles)\n"
+printf "  3. Discovered StreamGoat-Role-admin with AdministratorAccess\n"
+printf "  4. Found Lambda_2 with sts:AssumeRole permission\n"
+printf "  5. Modified Lambda code via UpdateFunctionCode\n"
+printf "  6. Lambda assumed admin role and attached AdministratorAccess to user\n\n"
+
+printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
+printf "  • Full AWS account administrator access\n"
+printf "  • Lambda code injection for privilege escalation\n"
+printf "  • Role chaining via sts:AssumeRole\n\n"
+
+printf "%s\n" "Defenders should monitor for:"
+printf "  • Lambda code updates (UpdateFunctionCode events)\n"
+printf "  • AssumeRole calls to privileged roles\n"
+printf "  • AttachUserPolicy/AttachRolePolicy to admin policies\n"
+printf "  • Credential usage from unexpected locations\n\n"
+
 printf "\n"
 read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit" _ || true
