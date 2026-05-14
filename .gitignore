@@ -216,3 +216,8 @@ terraform.tfvars.backup
 
 # macOS metadata
 .DS_Store
+
+# Project-specific
+CLAUDE.md
+ideas.md
+*.zip
