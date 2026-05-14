@@ -211,6 +211,7 @@ __marimo__/
 .terraform.lock.hcl
 terraform.tfstate
 terraform.tfstate.backup
+*.backup
 terraform.tfvars
 terraform.tfvars.backup
 
