@@ -211,8 +211,15 @@ __marimo__/
 .terraform.lock.hcl
 terraform.tfstate
 terraform.tfstate.backup
+*.backup
 terraform.tfvars
 terraform.tfvars.backup
 
 # macOS metadata
 .DS_Store
+
+# Project-specific
+CLAUDE.md
+ideas.md
+*.zip
+temp/
