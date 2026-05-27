@@ -189,7 +189,58 @@ resource "aws_iam_instance_profile" "clinic" {
 }
 
 # ---------------------------------------------------------------------------
-# IAM – "backup" user (the credential the attacker steals from root's env)
+# S3 bucket with sensitive patient data (the exfiltration target)
+# ---------------------------------------------------------------------------
+
+resource "random_id" "bucket_suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "patient_data" {
+  bucket        = "cdrgoat-ai-1-patient-data-${random_id.bucket_suffix.hex}"
+  force_destroy = true
+  tags          = { Name = "cdrgoat-ai-1-patient-data" }
+}
+
+resource "aws_s3_bucket_public_access_block" "patient_data" {
+  bucket                  = aws_s3_bucket.patient_data.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_object" "patient_records" {
+  bucket  = aws_s3_bucket.patient_data.id
+  key     = "records/patient_records.csv"
+  content = <<-CSV
+patient_id,name,dob,ssn,diagnosis,medication,doctor,insurance_id
+P-1001,Sarah Johnson,1985-03-15,412-55-7891,Type 2 Diabetes,Metformin 500mg,Dr. Emily Carter,BCBS-44921
+P-1002,Michael Torres,1972-08-22,553-12-4478,Hypertension,Lisinopril 20mg,Dr. James Nguyen,AETNA-88103
+P-1003,Emily Chen,1990-11-03,621-33-9902,Eczema,Triamcinolone 0.1%,Dr. Sofia Ramirez,UHC-55672
+P-1004,Robert Williams,1968-05-19,334-78-1123,Knee Osteoarthritis,Celecoxib 200mg,Dr. Michael Chen,CIGNA-33201
+P-1005,Lisa Patel,2015-07-30,445-66-2234,Asthma,Albuterol inhaler,Dr. Aisha Patel,BCBS-44922
+P-1006,James Anderson,1955-12-01,178-44-5567,Atrial Fibrillation,Eliquis 5mg,Dr. James Nguyen,MEDICARE-90123
+P-1007,Maria Garcia,1988-09-14,290-11-8834,Psoriasis,Humira 40mg,Dr. Sofia Ramirez,AETNA-88104
+P-1008,David Kim,1995-02-28,512-99-3345,Anxiety,Sertraline 50mg,Dr. Emily Carter,UHC-55673
+  CSV
+}
+
+resource "aws_s3_object" "billing_data" {
+  bucket  = aws_s3_bucket.patient_data.id
+  key     = "billing/billing_summary_2026.csv"
+  content = <<-CSV
+invoice_id,patient_id,date,procedure,amount,insurance_claim,cc_last4,status
+INV-5001,P-1001,2026-04-10,Lab work + consultation,450.00,BCBS-44921-CLM-8821,4532,paid
+INV-5002,P-1002,2026-04-12,ECG + follow-up,680.00,AETNA-88103-CLM-9932,8901,paid
+INV-5003,P-1006,2026-04-15,Cardiac monitoring,1250.00,MEDICARE-90123-CLM-1104,3345,pending
+INV-5004,P-1003,2026-04-18,Dermatology consult,320.00,UHC-55672-CLM-2205,6678,paid
+INV-5005,P-1005,2026-04-22,Pediatric check-up,280.00,BCBS-44922-CLM-3306,9912,paid
+  CSV
+}
+
+# ---------------------------------------------------------------------------
+# IAM – "backup" user (the credential the attacker steals from root)
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_user" "backup" {
@@ -202,25 +253,28 @@ resource "aws_iam_access_key" "backup" {
 }
 
 resource "aws_iam_user_policy" "backup" {
-  name = "ssm-and-ec2"
+  name = "s3-backup-access"
   user = aws_iam_user.backup.name
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
-          "ssm:StartSession",
-          "ssm:TerminateSession",
-          "ssm:ResumeSession"
-        ]
+        Effect   = "Allow"
+        Action   = ["s3:ListAllMyBuckets"]
         Resource = "*"
       },
       {
-        Effect   = "Allow"
-        Action   = ["ec2:DescribeInstances"]
-        Resource = "*"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = [
+          aws_s3_bucket.patient_data.arn,
+          "${aws_s3_bucket.patient_data.arn}/*"
+        ]
       }
     ]
   })
@@ -330,14 +384,15 @@ CRON
 chmod 644 /etc/cron.d/clinic-backup
 
 # ── Root AWS credentials (the exfiltration target) ───────────────────────
-mkdir -p /root/.aws
-cat >/root/.aws/credentials <<'AWSCREDS'
+# Stored outside ~/.aws so boto3 doesn't pick them up over the instance role
+cat >/root/.backup_aws_credentials <<'AWSCREDS'
 [default]
 aws_access_key_id = ${aws_iam_access_key.backup.id}
 aws_secret_access_key = ${aws_iam_access_key.backup.secret}
 region = ${var.aws_region}
 AWSCREDS
-chmod 600 /root/.aws/credentials
+chmod 600 /root/.backup_aws_credentials
+
 
 # ── Flask chat application ───────────────────────────────────────────────
 mkdir -p /opt/clinic-chat/templates /opt/clinic-chat/messages
@@ -366,7 +421,7 @@ def chat():
     with open(os.path.join(MSG_DIR, f"{msg_id}.json"), "w") as f:
         json.dump(payload, f)
 
-    for _ in range(120):
+    for _ in range(300):
         resp_path = os.path.join(MSG_DIR, f"{msg_id}_response.json")
         if os.path.exists(resp_path):
             with open(resp_path) as f:
@@ -525,7 +580,7 @@ def run_sql(query):
     try:
         result = subprocess.run(
             ["mysql", f"-u{DB_USER}", f"-p{DB_PASS}", DB_NAME, "-N", "-e", query],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=120
         )
         return result.stdout.strip() or result.stderr.strip() or "(empty result)"
     except Exception as e:
@@ -552,6 +607,14 @@ def check_staff_auth(msg):
     return None
 
 def process_message(user_msg):
+    # Always send to LLM first — creates audit trail for AI monitoring
+    try:
+        llm_response = call_llm([{"role": "user", "content": user_msg}])
+        print(f"LLM response: {llm_response[:200]}...")
+    except Exception as e:
+        print(f"LLM call failed: {e}")
+        llm_response = None
+
     staff_name = check_staff_auth(user_msg)
 
     if staff_name:
@@ -562,16 +625,20 @@ def process_message(user_msg):
         else:
             return f"Hello {staff_name}! I've verified your identity. Please include the SQL query you'd like me to execute."
 
+    # Non-staff: use LLM response, handle <sql> tags
+    if llm_response is None:
+        return "Sorry, I encountered an error. Please try again."
+
     messages = [{"role": "user", "content": user_msg}]
+    response = llm_response
 
     for _ in range(5):
-        response = call_llm(messages)
-
         if "<sql>" in response and "</sql>" in response:
             sql = response.split("<sql>")[1].split("</sql>")[0].strip()
             sql_result = run_sql(sql)
             messages.append({"role": "assistant", "content": response})
             messages.append({"role": "user", "content": f"SQL result:\n{sql_result}"})
+            response = call_llm(messages)
         else:
             return response
 
@@ -619,8 +686,8 @@ sed -i "s|__DB_PASS__|${local.db_pass}|" /opt/clinic-chat/agent.py
 sed -i "s|__DB_NAME__|${local.db_name}|" /opt/clinic-chat/agent.py
 
 # ── Start services ───────────────────────────────────────────────────────
-nohup python3 /opt/clinic-chat/app.py >/var/log/clinic-chat.log 2>&1 &
-nohup python3 /opt/clinic-chat/agent.py >/var/log/clinic-agent.log 2>&1 &
+nohup python3 -u /opt/clinic-chat/app.py >/var/log/clinic-chat.log 2>&1 &
+nohup python3 -u /opt/clinic-chat/agent.py >/var/log/clinic-agent.log 2>&1 &
 
 echo "=== CDRGoat AI Scenario 1 – Setup complete ==="
 EOT
@@ -661,7 +728,7 @@ output "clinic_ip" {
   value       = aws_instance.clinic.public_ip
 }
 
-output "instance_id" {
-  description = "EC2 instance ID (for SSM verification at end of attack)"
-  value       = aws_instance.clinic.id
+output "patient_data_bucket" {
+  description = "S3 bucket with sensitive patient data (the exfiltration target)"
+  value       = aws_s3_bucket.patient_data.id
 }
