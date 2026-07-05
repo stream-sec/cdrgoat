@@ -1,59 +1,65 @@
 # 1. RCE on EC2 to RDS Pivot
 
-## 🗺️ Overview
-This scenario demonstrates a multi-stage AWS compromise in which an attacker exploits a remote code execution vulnerability in a public web application hosted on EC2-A. Leveraging the instance’s IAM role credentials obtained from the metadata service, they enumerate the environment and identify a private EC2 instance (EC2-B). By injecting an SSH key or initiating an SSM session, they pivot into EC2-B, where they uncover credentials and connection details for an RDS MySQL database. Using this access, the attacker connects to the database and exfiltrates sensitive data. This exercise highlights how exposed services, weak segmentation between public and private resources, and over-permissive IAM roles can be chained together, public exposure, IAM credential misuse, and poor network design, culminating in full compromise of sensitive information inside AWS.
+## Overview
+This scenario demonstrates a multi-stage AWS compromise starting from a Remote Code Execution (RCE) vulnerability in a public-facing web application on EC2-A. The attacker leverages the instance’s IAM role credentials obtained via the Instance Metadata Service (IMDS) to enumerate the environment and discover a second EC2 instance (EC2-B). Using EC2 Instance Connect, the attacker injects an SSH key to pivot into EC2-B, where database credentials are stored in environment variables. With these credentials, the attacker connects to a private RDS MySQL database and exfiltrates sensitive data.
+
+This exercise highlights how public exposure, over-permissive IAM roles, insecure credential storage, and weak network segmentation can be chained to achieve full data compromise.
 
 &nbsp;
 
-## 🧩 Required Resources
+## Required Resources
 
 **Networking**
 - 1 VPC, single region
-- Subnets - 1 private, 1 public (public subnet assigned to EC2-A)
-- Internet Gateway - attached to VPC
+- 1 public subnet (EC2-A and EC2-B), 2 private subnets (RDS subnet group)
+- Internet Gateway attached to VPC
 - Security Groups
-  - allow HTTP (80) from internet to EC2-A
-  - allow SSH (22) from internet to EC2-B
-  - allow MySQL (3306) from EC2-B to RDS
+  - Allow HTTP (80) and SSH (22) from attacker IP to EC2-A
+  - Allow SSH (22) from attacker IP to EC2-B
+  - Allow MySQL (3306) from EC2-B to RDS
 
 **Compute**
-- EC2-A - Public web server (vulnerable web application, internet-facing)
-- EC2-B - Second instance for internal purposes but internet-facing
+- EC2-A — Public web server running a vulnerable Flask application (RCE endpoint)
+- EC2-B — Internal instance with MySQL client and database credentials in environment variables
 
-**Database / Storage**
-- RDS MySQL - Internal database storing sensitive data
+**Database**
+- RDS MySQL — Private database storing sensitive data (mysql.user table)
 
 **IAM / Identities & Access**
-- EC2-A role - Includes permissions that allow enumeration and pivoting
+- EC2-A role — `ec2:DescribeInstances`, `ec2-instance-connect:SendSSHPublicKey`, SSM managed policy
+- EC2-B role — SSM managed policy (for Session Manager access)
 
 &nbsp;
 
-## 🎯 Scenario Goals
-The attacker’s objective is to compromise an internet-exposed EC2 instance, use its permissions to gain access to an internal EC2 host, and ultimately reach an RDS database to exfiltrate sensitive data stored within it.
+## Scenario Goals
+The attacker’s objective is to compromise an internet-exposed EC2 instance, abuse its IAM permissions for lateral movement to a second instance, extract database credentials, and exfiltrate sensitive data from an RDS MySQL database.
 
 &nbsp;
 
-## 🖼️ Diagram
+## Diagram
 <img src="./diagram.png" alt="Diagram" width="400" style="display:block; margin:auto;" />
 
 &nbsp;
 
-## 🗡️ Attack Walkthrough
-- **Initial Access** – Exploit a vulnerable web application on EC2-A to achieve remote code execution.
-- **Credential Harvesting** – Obtain IAM role credentials from the instance metadata service.
-- **Enumeration** – Use the stolen credentials to list EC2 instances and identify EC2-B within the VPC.
-- **Pivoting** – Push an SSH public key via EC2 Instance Connect to gain access to EC2-B.
-- **Database Access** – Extract RDS connection details from EC2-B for credentials exfiltration.
-- **Data Retrieval** – Connect to the RDS MySQL database and retrieve the sensitive data.
+## Attack Walkthrough
+- **Initial Access** — Exploit an RCE vulnerability on EC2-A’s web application (`/cmd` endpoint)
+- **Credential Harvesting** — Steal temporary AWS credentials from the Instance Metadata Service (IMDSv2)
+- **Enumeration** — Probe IAM permissions and discover EC2-B via `ec2:DescribeInstances`
+- **Lateral Movement** — Inject an SSH public key to EC2-B via EC2 Instance Connect
+- **Credential Theft** — Extract RDS connection details from EC2-B’s environment variables
+- **Data Exfiltration** — Connect to RDS MySQL and exfiltrate the `mysql.user` table
 
 &nbsp;
 
-## 📈 Expected Results
-**Successful Completion** - Sensitive data retrieved from RDS.
+## Expected Results
+- Temporary AWS credentials harvested from IMDS
+- Lateral movement to EC2-B via SSH key injection
+- RDS MySQL credentials extracted from environment variables
+- Sensitive data (database user accounts and password hashes) exfiltrated
 
 &nbsp;
 
-## 🚀 Getting Started
+## Getting Started
 
 #### Install Dependencies
 
@@ -68,31 +74,26 @@ sudo apt update && sudo apt install -y terraform awscli jq
 
 #### Deploy
 
-Before deploying, download the provided Terraform configuration and Attack Script to the machine where you will run the attack steps.
+Use the provided Terraform configuration to deploy the full lab environment. At the end of the deployment, Terraform will display the public IP of EC2-A — save this value for the attack script.
 
-Use the provided Terraform configuration to deploy the full lab environment.
-
-At the end of the deployment Terraform will display output values (e.g. public IP address of the target instance). Save these details, you will need them to run the attack script in the next stage.
-
-⚠️ When a scenario’s initial step targets a public IP, add the public IP (or CIDR) of the machine that will run the attack script to the environment whitelist via terraform apply so the script can reach the target and complete any required interactions. See example
+Add the public IP (or CIDR) of your attack machine to the whitelist so the script can reach the target.
 
 ```bash
 terraform init
-terraform apply -var='attack_whitelist=["87.68.140.7/32","203.0.113.0/24"]' -auto-approve
+terraform apply -var=’attack_whitelist=["87.68.140.7/32"]’ -auto-approve
 ```
 
 #### Attack Execution
-Execute the attack script from your local terminal and use the output values provided at the end of the deployment as input parameters.
+Execute the attack script from your local terminal and provide the EC2-A public IP when prompted.
 
 ```bash
 chmod +x attack.sh
 ./attack.sh
 ```
 
-#### 🧹 Clean Up
-When you are finished, destroy all resources to avoid ongoing costs. This will tear down the entire lab environment including all compute, networking, and IAM components created during deployment.
-Use the following command for a full cleanup
+#### Clean Up
+Destroy all resources to avoid ongoing costs.
 
 ```bash
-terraform destroy -var='attack_whitelist=[]' -auto-approve
+terraform destroy -var=’attack_whitelist=[]’ -auto-approve
 ```
