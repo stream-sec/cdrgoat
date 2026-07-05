@@ -61,7 +61,7 @@ variable "attack_whitelist" {
   type        = list(string)
 }
 
-# Leave empty to auto-pick latest Ubuntu 22.04; set to override
+# Leave empty to auto-pick latest Ubuntu 24.04; set to override
 variable "ec2_ami" {
   type    = string
   default = ""
@@ -78,7 +78,7 @@ data "aws_ami" "ubuntu" {
   owners      = ["099720109477"] # Canonical
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
   filter {
     name   = "virtualization-type"
@@ -160,8 +160,8 @@ resource "aws_security_group" "sg_ec2_a" {
   }
 
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = var.attack_whitelist
   }
@@ -247,21 +247,51 @@ resource "aws_iam_role_policy" "jumphost_privs" {
   role   = aws_iam_role.ec2_a_role.id
   policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [{
-      Effect = "Allow",
-      Action = [
-        "ec2:DescribeInstances",
-        "ec2-instance-connect:SendSSHPublicKey",
-        "ec2-instance-connect:SendSerialConsoleSSHPublicKey"
-      ],
-      Resource = "*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["ec2:DescribeInstances"],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "ec2-instance-connect:SendSSHPublicKey",
+          "ec2-instance-connect:SendSerialConsoleSSHPublicKey"
+        ],
+        Resource = aws_instance.ec2_b.arn
+      }
+    ]
   })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_a_ssm" {
+  role       = aws_iam_role.ec2_a_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_instance_profile" "ec2_a_profile" {
   name = "StreamGoat-JumpHostPrivsInstanceProfile"
   role = aws_iam_role.ec2_a_role.name
+}
+
+############################
+# IAM for EC2-B (SSM access)
+############################
+
+resource "aws_iam_role" "ec2_b_role" {
+  name               = "StreamGoat-EC2bRole"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_b_ssm" {
+  role       = aws_iam_role.ec2_b_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ec2_b_profile" {
+  name = "StreamGoat-EC2bInstanceProfile"
+  role = aws_iam_role.ec2_b_role.name
 }
 
 ############################
@@ -311,38 +341,47 @@ locals {
     #!/bin/bash
     set -euxo pipefail
     export DEBIAN_FRONTEND=noninteractive
-    
+
+    # ensure SSM agent is running
+    snap install amazon-ssm-agent --classic 2>/dev/null || true
+    snap start amazon-ssm-agent 2>/dev/null || true
+
     # refresh package lists and install deps
     apt-get update -y
-    apt-get install -y python3 python3-pip
-    
-    # install flask
-    pip3 install --no-cache-dir flask
-    
+    apt-get install -y python3 python3-flask
+
+    # create limited service user
+    useradd -r -s /usr/sbin/nologin webapp
+
     # vulnerable flask app
     cat >/opt/app.py <<'PY'
     from flask import Flask, request
     app = Flask(__name__)
     @app.route('/')
     def index():
-        return 'Vulnerable app placeholder – replace with your RCE demo.'
+        return 'Vulnerable app placeholder – replace with your RCE demo. Hint: /cmd might be interesting.'
     @app.route('/cmd')
     def cmd():
         import os
         c = request.args.get('c','echo ok')
         return os.popen(c).read()
     if __name__ == '__main__':
-        app.run(host='0.0.0.0', port=80)
+        app.run(host='0.0.0.0', port=8080)
     PY
-    
-    nohup python3 /opt/app.py >/var/log/app.log 2>&1 &
+
+    chown webapp:webapp /opt/app.py
+    sudo -u webapp nohup python3 /opt/app.py >/var/log/app.log 2>&1 &
     EOT
     
       ec2_b_user_data = <<-EOT
     #!/bin/bash
     set -euxo pipefail
     export DEBIAN_FRONTEND=noninteractive
-    
+
+    # ensure SSM agent is running
+    snap install amazon-ssm-agent --classic 2>/dev/null || true
+    snap start amazon-ssm-agent 2>/dev/null || true
+
     apt-get update -y
     apt-get install -y mysql-client
 
@@ -388,6 +427,7 @@ resource "aws_instance" "ec2_b" {
   instance_type          = var.ec2_instance_type
   subnet_id              = aws_subnet.public_a.id    # moved to public subnet to get random public IP
   vpc_security_group_ids = [aws_security_group.sg_ec2_b.id]
+  iam_instance_profile   = aws_iam_instance_profile.ec2_b_profile.name
   user_data              = local.ec2_b_user_data
   associate_public_ip_address = true
 
@@ -410,4 +450,12 @@ resource "aws_instance" "ec2_b" {
 
 output "starting_point" {
   value = aws_instance.ec2_a.public_ip
+}
+
+output "ec2_a_instance_id" {
+  value = aws_instance.ec2_a.id
+}
+
+output "ec2_b_instance_id" {
+  value = aws_instance.ec2_b.id
 }
