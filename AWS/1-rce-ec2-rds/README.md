@@ -37,7 +37,7 @@ The attacker’s objective is to compromise an internet-exposed EC2 instance, ab
 &nbsp;
 
 ## Diagram
-<img src="./diagram.png" alt="Diagram" width="400" style="display:block; margin:auto;" />
+![Diagram](./diagram.png)
 
 &nbsp;
 
