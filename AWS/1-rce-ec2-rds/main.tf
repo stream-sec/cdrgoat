@@ -1,7 +1,5 @@
-#terraform apply -var='attack_whitelist=["212.68.138.150/32","79.177.158.16/32","64.227.60.54/32"]' -auto-approve
-
 ############################
-# Terraform: AWS Attack Path Scenario – Single main.tf (Ubuntu + Random public IPs + RDS)
+# Terraform: AWS Attack Path Scenario 1 – RCE → IMDS → Lateral Movement → RDS
 ############################
 
 terraform {
@@ -27,7 +25,7 @@ provider "aws" {
 ############################
 
 variable "region" {
-  type    = string 
+  type    = string
   default = "us-east-1"
 }
 
@@ -61,14 +59,26 @@ variable "attack_whitelist" {
   type        = list(string)
 }
 
-# Leave empty to auto-pick latest Ubuntu 24.04; set to override
 variable "ec2_ami" {
   type    = string
   default = ""
 }
 
 ############################
-# Data (latest Ubuntu 22.04 AMI)
+# Random suffix for parallel deployments
+############################
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+locals {
+  prefix = "StreamGoat-aws1"
+  suffix = random_id.suffix.hex
+}
+
+############################
+# Data (latest Ubuntu 24.04 AMI)
 ############################
 
 data "aws_availability_zones" "available" {}
@@ -98,34 +108,34 @@ resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = { Name = "StreamGoat-vpc" }
+  tags                 = { Name = "${local.prefix}-vpc" }
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
-  tags   = { Name = "StreamGoat-igw" }
+  tags   = { Name = "${local.prefix}-igw" }
 }
 
 resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidr
-  map_public_ip_on_launch = true   # <-- enable random public IPs on launch
+  map_public_ip_on_launch = true
   availability_zone       = data.aws_availability_zones.available.names[0]
-  tags = { Name = "StreamGoat-public-a" }
+  tags                    = { Name = "${local.prefix}-public-a" }
 }
 
 resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnet1_cidr
   availability_zone = data.aws_availability_zones.available.names[0]
-  tags = { Name = "StreamGoat-private-a" }
+  tags              = { Name = "${local.prefix}-private-a" }
 }
 
 resource "aws_subnet" "private_b" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnet2_cidr
   availability_zone = data.aws_availability_zones.available.names[1]
-  tags = { Name = "StreamGoat-private-b" }
+  tags              = { Name = "${local.prefix}-private-b" }
 }
 
 resource "aws_route_table" "public" {
@@ -134,7 +144,7 @@ resource "aws_route_table" "public" {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
-  tags = { Name = "StreamGoat-public-rt" }
+  tags = { Name = "${local.prefix}-public-rt" }
 }
 
 resource "aws_route_table_association" "public_assoc" {
@@ -143,11 +153,11 @@ resource "aws_route_table_association" "public_assoc" {
 }
 
 ############################
-# Security Groups (inline rules)
+# Security Groups
 ############################
 
 resource "aws_security_group" "sg_ec2_a" {
-  name                   = "ec2-a-sg"
+  name                   = "${local.prefix}-ec2a-sg"
   description            = "Allow HTTP and SSH from internet"
   vpc_id                 = aws_vpc.main.id
   revoke_rules_on_delete = true
@@ -173,11 +183,11 @@ resource "aws_security_group" "sg_ec2_a" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "StreamGoat-sg-ec2-a" }
+  tags = { Name = "${local.prefix}-sg-ec2a" }
 }
 
 resource "aws_security_group" "sg_ec2_b" {
-  name                   = "ec2-b-sg"
+  name                   = "${local.prefix}-ec2b-sg"
   description            = "Allow SSH from internet"
   vpc_id                 = aws_vpc.main.id
   revoke_rules_on_delete = true
@@ -196,11 +206,11 @@ resource "aws_security_group" "sg_ec2_b" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "StreamGoat-sg-ec2-b" }
+  tags = { Name = "${local.prefix}-sg-ec2b" }
 }
 
 resource "aws_security_group" "sg_rds" {
-  name                   = "rds-sg"
+  name                   = "${local.prefix}-rds-sg"
   description            = "Allow MySQL from EC2-B"
   vpc_id                 = aws_vpc.main.id
   revoke_rules_on_delete = true
@@ -220,7 +230,7 @@ resource "aws_security_group" "sg_rds" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "sg-rds" }
+  tags = { Name = "${local.prefix}-sg-rds" }
 }
 
 ############################
@@ -238,13 +248,13 @@ data "aws_iam_policy_document" "ec2_assume" {
 }
 
 resource "aws_iam_role" "ec2_a_role" {
-  name               = "StreamGoat-JumpHostPrivsRole"
+  name               = "${local.prefix}-JumpHostPrivsRole-${local.suffix}"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
 resource "aws_iam_role_policy" "jumphost_privs" {
-  name   = "StreamGoat-JumpHostPrivs"
-  role   = aws_iam_role.ec2_a_role.id
+  name = "${local.prefix}-JumpHostPrivs"
+  role = aws_iam_role.ec2_a_role.id
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
@@ -271,7 +281,7 @@ resource "aws_iam_role_policy_attachment" "ec2_a_ssm" {
 }
 
 resource "aws_iam_instance_profile" "ec2_a_profile" {
-  name = "StreamGoat-JumpHostPrivsInstanceProfile"
+  name = "${local.prefix}-JumpHostPrivsProfile-${local.suffix}"
   role = aws_iam_role.ec2_a_role.name
 }
 
@@ -280,7 +290,7 @@ resource "aws_iam_instance_profile" "ec2_a_profile" {
 ############################
 
 resource "aws_iam_role" "ec2_b_role" {
-  name               = "StreamGoat-EC2bRole"
+  name               = "${local.prefix}-EC2bRole-${local.suffix}"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
@@ -290,7 +300,7 @@ resource "aws_iam_role_policy_attachment" "ec2_b_ssm" {
 }
 
 resource "aws_iam_instance_profile" "ec2_b_profile" {
-  name = "StreamGoat-EC2bInstanceProfile"
+  name = "${local.prefix}-EC2bProfile-${local.suffix}"
   role = aws_iam_role.ec2_b_role.name
 }
 
@@ -299,12 +309,11 @@ resource "aws_iam_instance_profile" "ec2_b_profile" {
 ############################
 
 resource "aws_db_subnet_group" "rds" {
-  name       = "rds-subnets"
+  name       = lower("${local.prefix}-rds-subnets-${local.suffix}")
   subnet_ids = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-  tags       = { Name = "rds-subnet-group" }
+  tags       = { Name = "${local.prefix}-rds-subnet-group" }
 }
 
-# Password policy compliant: printable ASCII except '/', '@', '"', and space
 resource "random_password" "db" {
   length           = 20
   special          = true
@@ -312,7 +321,7 @@ resource "random_password" "db" {
 }
 
 resource "aws_db_instance" "mysql" {
-  identifier                 = "streamgoat-mysql"
+  identifier                 = lower("${local.prefix}-mysql-${local.suffix}")
   allocated_storage          = 20
   db_subnet_group_name       = aws_db_subnet_group.rds.name
   vpc_security_group_ids     = [aws_security_group.sg_rds.id]
@@ -329,11 +338,11 @@ resource "aws_db_instance" "mysql" {
   apply_immediately          = true
   storage_encrypted          = false
   auto_minor_version_upgrade = true
-  tags = { Name = "StreamGoat-rds" }
+  tags                       = { Name = "${local.prefix}-rds" }
 }
 
 ############################
-# Ubuntu user-data for both instances
+# User-data for EC2 instances
 ############################
 
 locals {
@@ -372,8 +381,8 @@ locals {
     chown webapp:webapp /opt/app.py
     sudo -u webapp nohup python3 /opt/app.py >/var/log/app.log 2>&1 &
     EOT
-    
-      ec2_b_user_data = <<-EOT
+
+  ec2_b_user_data = <<-EOT
     #!/bin/bash
     set -euxo pipefail
     export DEBIAN_FRONTEND=noninteractive
@@ -397,38 +406,16 @@ locals {
 }
 
 ############################
-# EC2 Instances (no EIP; use AWS-assigned public IPs)
+# EC2 Instances
 ############################
 
 resource "aws_instance" "ec2_a" {
-  ami                    = local.ami_id
-  instance_type          = var.ec2_instance_type
-  subnet_id              = aws_subnet.public_a.id
-  vpc_security_group_ids = [aws_security_group.sg_ec2_a.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_a_profile.name
-  user_data              = local.ec2_a_user_data
-  associate_public_ip_address = true
-
-  root_block_device {
-    volume_size = 10
-    volume_type = "gp3"
-  }
-
-  metadata_options {
-    http_endpoint = "enabled"
-    http_tokens   = "required"  # IMDSv2 only
-  }
-
-  tags = { Name = "StreamGoat-EC2a" }
-}
-
-resource "aws_instance" "ec2_b" {
-  ami                    = local.ami_id
-  instance_type          = var.ec2_instance_type
-  subnet_id              = aws_subnet.public_a.id    # moved to public subnet to get random public IP
-  vpc_security_group_ids = [aws_security_group.sg_ec2_b.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_b_profile.name
-  user_data              = local.ec2_b_user_data
+  ami                         = local.ami_id
+  instance_type               = var.ec2_instance_type
+  subnet_id                   = aws_subnet.public_a.id
+  vpc_security_group_ids      = [aws_security_group.sg_ec2_a.id]
+  iam_instance_profile        = aws_iam_instance_profile.ec2_a_profile.name
+  user_data                   = local.ec2_a_user_data
   associate_public_ip_address = true
 
   root_block_device {
@@ -441,7 +428,29 @@ resource "aws_instance" "ec2_b" {
     http_tokens   = "required"
   }
 
-  tags = { Name = "StreamGoat-EC2b" }
+  tags = { Name = "${local.prefix}-EC2a" }
+}
+
+resource "aws_instance" "ec2_b" {
+  ami                         = local.ami_id
+  instance_type               = var.ec2_instance_type
+  subnet_id                   = aws_subnet.public_a.id
+  vpc_security_group_ids      = [aws_security_group.sg_ec2_b.id]
+  iam_instance_profile        = aws_iam_instance_profile.ec2_b_profile.name
+  user_data                   = local.ec2_b_user_data
+  associate_public_ip_address = true
+
+  root_block_device {
+    volume_size = 10
+    volume_type = "gp3"
+  }
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  tags = { Name = "${local.prefix}-EC2b" }
 }
 
 ############################

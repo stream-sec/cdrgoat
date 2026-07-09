@@ -1,26 +1,85 @@
-provider "aws" {
-  region = "us-east-1"
+############################
+# Terraform: AWS Attack Path Scenario 6 – Policy Version Abuse → SSM → NFS Exfiltration
+############################
+
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.5"
+    }
+  }
 }
 
-#####################
+provider "aws" {
+  region = var.region
+}
+
+############################
+# Variables
+############################
+
+variable "region" {
+  type    = string
+  default = "us-east-1"
+}
+
+############################
+# Random suffix for parallel deployments
+############################
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+locals {
+  prefix = "StreamGoat-aws6"
+  suffix = random_id.suffix.hex
+}
+
+############################
+# Data (latest Ubuntu 24.04 AMI)
+############################
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+############################
 # Networking
-#####################
+############################
 
 resource "aws_vpc" "streamgoat_vpc" {
-  cidr_block = "10.0.0.0/16"
+  cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-
+  tags                 = { Name = "${local.prefix}-vpc" }
 }
 
 resource "aws_subnet" "streamgoat_subnet" {
   vpc_id            = aws_vpc.streamgoat_vpc.id
   cidr_block        = "10.0.0.0/24"
-  availability_zone = "us-east-1a"
+  availability_zone = "${var.region}a"
+  tags              = { Name = "${local.prefix}-subnet" }
 }
 
 resource "aws_internet_gateway" "streamgoat_igw" {
   vpc_id = aws_vpc.streamgoat_vpc.id
+  tags   = { Name = "${local.prefix}-igw" }
 }
 
 resource "aws_route_table" "streamgoat_rt" {
@@ -30,6 +89,8 @@ resource "aws_route_table" "streamgoat_rt" {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.streamgoat_igw.id
   }
+
+  tags = { Name = "${local.prefix}-rt" }
 }
 
 resource "aws_route_table_association" "rt_assoc" {
@@ -37,8 +98,12 @@ resource "aws_route_table_association" "rt_assoc" {
   route_table_id = aws_route_table.streamgoat_rt.id
 }
 
+############################
+# Security Groups
+############################
+
 resource "aws_security_group" "streamgoat_sg" {
-  name   = "streamgoat-sg"
+  name   = "${local.prefix}-sg"
   vpc_id = aws_vpc.streamgoat_vpc.id
 
   # Only allow NFS (EFS) access within the subnet
@@ -56,15 +121,18 @@ resource "aws_security_group" "streamgoat_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = { Name = "${local.prefix}-sg" }
 }
 
-#####################
+############################
 # EFS
-#####################
+############################
 
 resource "aws_efs_file_system" "streamgoat_efs" {
-  creation_token = "streamgoat-efs"
+  creation_token = "${local.prefix}-efs-${local.suffix}"
   encrypted      = false
+  tags           = { Name = "${local.prefix}-efs" }
 }
 
 resource "aws_efs_mount_target" "efs_mount" {
@@ -73,12 +141,12 @@ resource "aws_efs_mount_target" "efs_mount" {
   security_groups = [aws_security_group.streamgoat_sg.id]
 }
 
-#####################
+############################
 # IAM - User Alisa
-#####################
+############################
 
 resource "aws_iam_user" "alisa" {
-  name = "StreamGoat-User-Alisa"
+  name = "${local.prefix}-User-Alisa-${local.suffix}"
 }
 
 resource "aws_iam_access_key" "alisa_keys" {
@@ -86,15 +154,14 @@ resource "aws_iam_access_key" "alisa_keys" {
 }
 
 resource "aws_iam_policy" "streamgoat_policy" {
-  name        = "StreamGoat-Policy-basic"
-  policy      = data.aws_iam_policy_document.policy_v1.json
+  name   = "${local.prefix}-Policy-basic-${local.suffix}"
+  policy = data.aws_iam_policy_document.policy_v1.json
 }
 
 resource "aws_iam_user_policy_attachment" "attach_policy" {
   user       = aws_iam_user.alisa.name
   policy_arn = aws_iam_policy.streamgoat_policy.arn
 }
-
 
 resource "null_resource" "policy_versions" {
   depends_on = [aws_iam_policy.streamgoat_policy]
@@ -106,7 +173,6 @@ resource "null_resource" "policy_versions" {
   provisioner "local-exec" {
     command = "aws iam create-policy-version --policy-arn ${aws_iam_policy.streamgoat_policy.arn} --policy-document file://policies/v3.json --no-set-as-default"
   }
-
 }
 
 data "aws_iam_policy_document" "policy_v1" {
@@ -128,26 +194,16 @@ data "aws_iam_policy_document" "policy_v1" {
   }
 }
 
-#####################
-# EC2 (Ubuntu)
-#####################
-
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"]
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
-}
+############################
+# IAM - EC2 Role (SSM)
+############################
 
 resource "aws_iam_role" "ec2_ssm_role" {
-  name = "StreamGoatEC2Role"
+  name = "${local.prefix}-EC2Role-${local.suffix}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect    = "Allow"
+      Effect = "Allow"
       Principal = {
         Service = "ec2.amazonaws.com"
       }
@@ -162,9 +218,13 @@ resource "aws_iam_role_policy_attachment" "ssm_attach" {
 }
 
 resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "StreamGoatEC2Profile"
+  name = "${local.prefix}-EC2Profile-${local.suffix}"
   role = aws_iam_role.ec2_ssm_role.name
 }
+
+############################
+# EC2 Instance
+############################
 
 resource "aws_instance" "streamgoat_ec2" {
   ami                         = data.aws_ami.ubuntu.id
@@ -175,7 +235,7 @@ resource "aws_instance" "streamgoat_ec2" {
   iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
 
   tags = {
-    Name = "StreamGoat-EC2a"
+    Name = "${local.prefix}-EC2a"
   }
 
   user_data = <<-EOF
@@ -192,9 +252,9 @@ resource "aws_instance" "streamgoat_ec2" {
   EOF
 }
 
-#####################
+############################
 # Outputs
-#####################
+############################
 
 output "leaked_access_key" {
   value     = aws_iam_access_key.alisa_keys.id

