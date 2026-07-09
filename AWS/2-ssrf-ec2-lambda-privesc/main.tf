@@ -1,26 +1,52 @@
-#terraform apply -var='attack_whitelist=["212.68.138.150/32","79.177.158.16/32","64.227.60.54/32"]' -auto-approve
+############################
+# Terraform: AWS Attack Path Scenario 2 – SSRF → IMDS → Lambda PrivEsc
+############################
 
 terraform {
   required_version = ">= 1.5.0"
-
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 5.0"
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.0"
+      version = ">= 3.5"
     }
   }
 }
 
 provider "aws" {
-  region = "us-east-1"
+  region = var.region
 }
 
-resource "random_id" "suffix" {
-  byte_length = 3
+############################
+# Variables
+############################
+
+variable "region" {
+  type    = string
+  default = "us-east-1"
+}
+
+variable "vpc_cidr" {
+  type    = string
+  default = "10.0.0.0/16"
+}
+
+variable "public_subnet_cidr" {
+  type    = string
+  default = "10.0.1.0/24"
+}
+
+variable "private_subnet_cidr" {
+  type    = string
+  default = "10.0.2.0/24"
+}
+
+variable "ec2_instance_type" {
+  type    = string
+  default = "t2.micro"
 }
 
 variable "attack_whitelist" {
@@ -33,12 +59,29 @@ variable "ec2_ami" {
   default = ""
 }
 
+############################
+# Random suffix for parallel deployments
+############################
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+locals {
+  prefix = "StreamGoat-aws2"
+  suffix = random_id.suffix.hex
+}
+
+############################
+# Data (latest Ubuntu 24.04 AMI)
+############################
+
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
   filter {
     name   = "virtualization-type"
@@ -50,101 +93,43 @@ locals {
   ami_id = var.ec2_ami != "" ? var.ec2_ami : data.aws_ami.ubuntu.id
 }
 
-locals {
-  ec2_a_user_data = <<-EOT
-    #!/bin/bash
-    set -euxo pipefail
-    export DEBIAN_FRONTEND=noninteractive
-    
-    # refresh package lists and install deps
-    apt-get update -y
-    apt-get install -y python3 python3-pip
-    
-    # install flask
-    pip3 install --no-cache-dir flask
-    
-    # vulnerable flask app
-    cat >/opt/app.py <<'PY'
-    from flask import Flask, request
-    app = Flask(__name__)
-    @app.route('/')
-    def index():
-        return 'Vulnerable app placeholder – replace with your SSRF demo.'
-    @app.route('/ssrf')
-    def ssrf():
-        import requests
-        target = request.args.get("url")
-        r = requests.get(target, timeout=5)
-        return r.content, r.status_code, r.headers
-    if __name__ == '__main__':
-        app.run(host='0.0.0.0', port=80)
-    PY
-    
-    nohup python3 /opt/app.py >/var/log/app.log 2>&1 &
-  EOT
+############################
+# Networking
+############################
 
-  ec2_b_user_data = <<-EOT
-    #!/bin/bash
-    echo test
-  EOT
-}
-
-# --------------------------
-# VPC
-# --------------------------
 resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
+  cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
-
-  tags = {
-    Name = "StreamGoat-vpc"
-  }
+  tags                 = { Name = "${local.prefix}-vpc" }
 }
 
-# Internet Gateway
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name = "StreamGoat-igw"
-  }
+  tags   = { Name = "${local.prefix}-igw" }
 }
 
-# Public Subnet
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
+  cidr_block              = var.public_subnet_cidr
   map_public_ip_on_launch = true
-
-  tags = {
-    Name = "scenario2-public-subnet"
-  }
+  tags                    = { Name = "${local.prefix}-public-subnet" }
 }
 
-# Private Subnet
 resource "aws_subnet" "private" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.2.0/24"
+  cidr_block              = var.private_subnet_cidr
   map_public_ip_on_launch = false
-
-  tags = {
-    Name = "StreamGoat-private-subnet"
-  }
+  tags                    = { Name = "${local.prefix}-private-subnet" }
 }
 
-# Public Route Table
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
-
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
-
-  tags = {
-    Name = "StreamGoat-public-rt"
-  }
+  tags = { Name = "${local.prefix}-public-rt" }
 }
 
 resource "aws_route_table_association" "public_assoc" {
@@ -152,46 +137,46 @@ resource "aws_route_table_association" "public_assoc" {
   route_table_id = aws_route_table.public.id
 }
 
-# --------------------------
-# NAT
-# --------------------------
-# EIP for NAT
+############################
+# NAT Gateway (EC2-B internet access)
+############################
+
 resource "aws_eip" "nat_eip" {
   domain = "vpc"
-  tags = { Name = "StreamGoat-nat-eip" }
+  tags   = { Name = "${local.prefix}-nat-eip" }
 }
 
-# NAT Gateway in the public subnet
 resource "aws_nat_gateway" "nat" {
   subnet_id     = aws_subnet.public.id
   allocation_id = aws_eip.nat_eip.id
-  tags = { Name = "StreamGoat-nat" }
+  tags          = { Name = "${local.prefix}-nat" }
 }
 
-# Private RT that sends Internet-bound traffic via NAT
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
   route {
     cidr_block     = "0.0.0.0/0"
     nat_gateway_id = aws_nat_gateway.nat.id
   }
-  tags = { Name = "StreamGoat-private-rt" }
+  tags = { Name = "${local.prefix}-private-rt" }
 }
 
 resource "aws_route_table_association" "private_assoc" {
   subnet_id      = aws_subnet.private.id
   route_table_id = aws_route_table.private.id
 }
-# --------------------------
+
+############################
 # Security Groups
-# --------------------------
+############################
+
 resource "aws_security_group" "public_sg" {
-  name        = "StreamGoat-public-sg"
-  description = "Allow HTTP/SSH"
-  vpc_id      = aws_vpc.main.id
+  name                   = "${local.prefix}-public-sg"
+  description            = "Allow HTTP and SSH from attacker IP"
+  vpc_id                 = aws_vpc.main.id
+  revoke_rules_on_delete = true
 
   ingress {
-    description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -199,9 +184,8 @@ resource "aws_security_group" "public_sg" {
   }
 
   ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = var.attack_whitelist
   }
@@ -213,15 +197,14 @@ resource "aws_security_group" "public_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "scenario2-public-sg"
-  }
+  tags = { Name = "${local.prefix}-public-sg" }
 }
 
 resource "aws_security_group" "private_sg" {
-  name        = "StreamGoat-private-sg"
-  description = "Allow SSH from public subnet"
-  vpc_id      = aws_vpc.main.id
+  name                   = "${local.prefix}-private-sg"
+  description            = "Allow SSH from public subnet"
+  vpc_id                 = aws_vpc.main.id
+  revoke_rules_on_delete = true
 
   ingress {
     description     = "SSH from public SG"
@@ -238,68 +221,16 @@ resource "aws_security_group" "private_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "StreamGoat-private-sg"
-  }
+  tags = { Name = "${local.prefix}-private-sg" }
 }
 
-# --------------------------
-# EC2 Instances
-# --------------------------
-resource "aws_instance" "ec2_a" {
-  ami                    = local.ami_id
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.public_sg.id]
-  user_data              = local.ec2_a_user_data
-  iam_instance_profile = aws_iam_instance_profile.jumphost_privs.name
-
-  tags = {
-    Name = "StreamGoat-EC2a"
-  }
-}
-
-resource "aws_instance" "ec2_b" {
-  ami                    = local.ami_id
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private.id
-  vpc_security_group_ids = [aws_security_group.private_sg.id]
-  user_data              = local.ec2_b_user_data
-  iam_instance_profile = aws_iam_instance_profile.lambda_privs.name
-
-  tags = {
-    Name = "StreamGoat-EC2b"
-  }
-}
-
-# --------------------------
-# IAM Roles
-# --------------------------
-resource "aws_iam_role_policy_attachment" "jumphost_ssm_core" {
-  role       = aws_iam_role.jumphost_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_role" "jumphost_role" {
-  name               = "StreamGoat-JumpHostRole"
-  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
-}
-
-resource "aws_iam_role_policy" "jumphost_policy" {
-  name   = "StreamGoat-JumpHost-Policy"
-  role   = aws_iam_role.jumphost_role.id
-  policy = data.aws_iam_policy_document.jumphost_policy.json
-}
-
-resource "aws_iam_instance_profile" "jumphost_privs" {
-  name = "StreamGoat-JumpHost"
-  role = aws_iam_role.jumphost_role.name
-}
+############################
+# IAM for EC2-A (JumpHost)
+############################
 
 data "aws_iam_policy_document" "ec2_assume" {
   statement {
     actions = ["sts:AssumeRole"]
-
     principals {
       type        = "Service"
       identifiers = ["ec2.amazonaws.com"]
@@ -307,51 +238,92 @@ data "aws_iam_policy_document" "ec2_assume" {
   }
 }
 
-data "aws_iam_policy_document" "jumphost_policy" {
-  statement {
-    actions   = ["ec2:DescribeInstances","ssm:StartSession", "ssm:SendCommand", "ssm:DescribeSessions", "ssm:GetConnectionStatus", "ssm:DescribeInstanceProperties", "ssm:TerminateSession", "ssm:ResumeSession", "ssm:GetCommandInvocation"]
-    resources = ["*"]
-  }
-}
-
-# Role for EC2-B
-resource "aws_iam_role_policy_attachment" "lambda_privs_ssm_core" {
-  role       = aws_iam_role.lambda_privs_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_role" "lambda_privs_role" {
-  name               = "StreamGoat-LambdaMgmt-Role"
+resource "aws_iam_role" "jumphost_role" {
+  name               = "${local.prefix}-JumpHostRole-${local.suffix}"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
-resource "aws_iam_role_policy" "lambda_privs_policy" {
-  name   = "StreamGoat-LambdaMgmt-Policy"
-  role   = aws_iam_role.lambda_privs_role.id
-  policy = data.aws_iam_policy_document.lambda_privs_policy.json
+resource "aws_iam_role_policy" "jumphost_policy" {
+  name = "${local.prefix}-JumpHost-Policy"
+  role = aws_iam_role.jumphost_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "ec2:DescribeInstances",
+          "ssm:StartSession",
+          "ssm:SendCommand",
+          "ssm:DescribeSessions",
+          "ssm:GetConnectionStatus",
+          "ssm:DescribeInstanceProperties",
+          "ssm:TerminateSession",
+          "ssm:ResumeSession",
+          "ssm:GetCommandInvocation"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
 }
 
-resource "aws_iam_instance_profile" "lambda_privs" {
-  name = "StreamGoat-LambdaMgmt"
-  role = aws_iam_role.lambda_privs_role.name
+resource "aws_iam_role_policy_attachment" "jumphost_ssm_core" {
+  role       = aws_iam_role.jumphost_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-data "aws_iam_policy_document" "lambda_privs_policy" {
-  statement {
-    actions   = [
-                    "lambda:InvokeFunction",
-                    "lambda:CreateFunction",
-                    "iam:PassRole",
-                    "iam:ListRoles",
-                    "iam:GetRole",
-                    "iam:ListRolePolicies",
-                    "iam:GetRolePolicy"
-                ]
-    resources = ["*"]
-  }
+resource "aws_iam_instance_profile" "jumphost_profile" {
+  name = "${local.prefix}-JumpHostProfile-${local.suffix}"
+  role = aws_iam_role.jumphost_role.name
 }
 
-# Role to be assigned on Lambda AttachRolePolicy
+############################
+# IAM for EC2-B (Lambda Management)
+############################
+
+resource "aws_iam_role" "lambda_mgmt_role" {
+  name               = "${local.prefix}-LambdaMgmt-Role-${local.suffix}"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
+}
+
+resource "aws_iam_role_policy" "lambda_mgmt_policy" {
+  name = "${local.prefix}-LambdaMgmt-Policy"
+  role = aws_iam_role.lambda_mgmt_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "lambda:InvokeFunction",
+          "lambda:CreateFunction",
+          "iam:PassRole",
+          "iam:ListRoles",
+          "iam:GetRole",
+          "iam:ListRolePolicies",
+          "iam:GetRolePolicy"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_mgmt_ssm_core" {
+  role       = aws_iam_role.lambda_mgmt_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "lambda_mgmt_profile" {
+  name = "${local.prefix}-LambdaMgmtProfile-${local.suffix}"
+  role = aws_iam_role.lambda_mgmt_role.name
+}
+
+############################
+# IAM for Lambda (AttachRolePolicy)
+############################
+
 data "aws_iam_policy_document" "lambda_assume_role" {
   statement {
     effect = "Allow"
@@ -363,29 +335,139 @@ data "aws_iam_policy_document" "lambda_assume_role" {
   }
 }
 
-resource "aws_iam_role" "for_lambda_attachrp" {
-  name               = "StreamGoat-AttachRolePolicy-Role"
+resource "aws_iam_role" "attach_role_policy" {
+  name               = "${local.prefix}-AttachRolePolicy-Role-${local.suffix}"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 }
 
-data "aws_iam_policy_document" "for_lambda_attachrp_policy" {
-  statement {
-    actions = [
-      "iam:AttachRolePolicy"
+resource "aws_iam_role_policy" "attach_role_policy" {
+  name = "${local.prefix}-AttachRolePolicy-Policy"
+  role = aws_iam_role.attach_role_policy.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["iam:AttachRolePolicy"],
+        Resource = "*"
+      }
     ]
-    resources = ["*"]
-  }
+  })
 }
 
-resource "aws_iam_role_policy" "for_lambda_attachrp_policy" {
-  name   = "StreamGoat-AttachRolePolicy-Policy"
-  role   = aws_iam_role.for_lambda_attachrp.id
-  policy = data.aws_iam_policy_document.for_lambda_attachrp_policy.json
+############################
+# User-data for EC2 instances
+############################
+
+locals {
+  ec2_a_user_data = <<-EOT
+    #!/bin/bash
+    set -euxo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    # ensure SSM agent is running
+    snap install amazon-ssm-agent --classic 2>/dev/null || true
+    snap start amazon-ssm-agent 2>/dev/null || true
+
+    # refresh package lists and install deps
+    apt-get update -y
+    apt-get install -y python3 python3-flask python3-requests
+
+    # create limited service user
+    useradd -r -s /usr/sbin/nologin webapp
+
+    # vulnerable flask app with SSRF endpoint
+    cat >/opt/app.py <<'PY'
+    from flask import Flask, request
+    app = Flask(__name__)
+    @app.route('/')
+    def index():
+        return 'Vulnerable app placeholder – replace with your SSRF demo.'
+    @app.route('/ssrf')
+    def ssrf():
+        import requests as req
+        target = request.args.get("url")
+        r = req.get(target, timeout=5)
+        return r.content, r.status_code, dict(r.headers)
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=8080)
+    PY
+
+    chown webapp:webapp /opt/app.py
+    sudo -u webapp nohup python3 /opt/app.py >/var/log/app.log 2>&1 &
+    EOT
+
+  ec2_b_user_data = <<-EOT
+    #!/bin/bash
+    set -euxo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    # ensure SSM agent is running
+    snap install amazon-ssm-agent --classic 2>/dev/null || true
+    snap start amazon-ssm-agent 2>/dev/null || true
+    EOT
 }
+
+############################
+# EC2 Instances
+############################
+
+resource "aws_instance" "ec2_a" {
+  ami                         = local.ami_id
+  instance_type               = var.ec2_instance_type
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.public_sg.id]
+  iam_instance_profile        = aws_iam_instance_profile.jumphost_profile.name
+  user_data                   = local.ec2_a_user_data
+  associate_public_ip_address = true
+
+  root_block_device {
+    volume_size = 10
+    volume_type = "gp3"
+  }
+
+  # IMDSv1 required — SSRF cannot obtain the IMDSv2 PUT token
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "optional"
+  }
+
+  tags = { Name = "${local.prefix}-EC2a" }
+}
+
+resource "aws_instance" "ec2_b" {
+  ami                    = local.ami_id
+  instance_type          = var.ec2_instance_type
+  subnet_id              = aws_subnet.private.id
+  vpc_security_group_ids = [aws_security_group.private_sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.lambda_mgmt_profile.name
+  user_data              = local.ec2_b_user_data
+
+  root_block_device {
+    volume_size = 10
+    volume_type = "gp3"
+  }
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  tags = { Name = "${local.prefix}-EC2b" }
+}
+
 ############################
 # Outputs
 ############################
 
 output "starting_point" {
   value = aws_instance.ec2_a.public_ip
+}
+
+output "ec2_a_instance_id" {
+  value = aws_instance.ec2_a.id
+}
+
+output "ec2_b_instance_id" {
+  value = aws_instance.ec2_b.id
 }

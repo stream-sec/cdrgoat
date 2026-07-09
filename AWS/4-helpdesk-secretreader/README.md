@@ -1,49 +1,56 @@
-# 4. From Helpdesk user to Secret Readers
+# 4. From Helpdesk User to Secret Exfiltration
 
-## 🗺️ Overview
-This scenario demonstrates how an attacker can abuse overly permissive IAM group management when starting with a leaked AWS access key. After authenticating with the compromised key, the attacker discovers they have permission to call iam:AddUserToGroup but cannot list existing groups. To overcome this, they attempt to brute-force likely group names and eventually succeed in adding their user account to a high-privilege group, StreamGoat_SecretReader, that grants access to AWS Secrets Manager. With these new privileges, the attacker enumerates and exfiltrates sensitive secrets. This exercise highlights how leaked long-term credentials, weak IAM design, and the lack of proper controls on group membership can lead to privilege escalation and the compromise of sensitive data.
+## Overview
+This scenario demonstrates how an attacker can abuse overly permissive IAM group management starting from a leaked AWS access key. After authenticating with the compromised helpdesk user credentials, the attacker discovers they have `iam:AddUserToGroup` permission scoped to `StreamGoat-Group-*` but cannot list existing groups. To overcome this, they brute-force likely group names by attempting `AddUserToGroup` calls — a failed call means the group doesn't exist, while a successful call means the group exists and the user is now a member. The attacker successfully joins the `StreamGoat-Group-secretreaders` group, which grants access to AWS Secrets Manager, and exfiltrates sensitive database credentials.
 
-&nbsp;
-
-## 🧩 Required Resources
-
-**Identities & Access**
-- User 'peter.parker' with leaked AWS key, member of a group 'StreamGoat-Group-helpdesk'
-- Group 'StreamGoat-Group-helpdesk' with multiple iam:List/Get permissions for Roles and Policies + iam:AddUserToGroup
-- Group 'StreamGoat-Group-secretreaders' with permissions to list and get secrets' value
-- Secret 'StreamGoat-DB-PROD-xxxx' with sensitive login/password
+This exercise highlights how leaked long-term credentials, weak IAM design, and the lack of proper controls on group membership can lead to privilege escalation and the compromise of sensitive data.
 
 &nbsp;
 
-## 🎯 Scenario Goals
-- Demonstrate how a leaked AWS access key combined with permissive S3 policies can lead to both data theft and code execution.  
-- Show how attackers can abuse Lambda roles to escalate privileges and assume administrative access.
+## Required Resources
+
+**IAM / Identities & Access**
+- User `peter.parker` with leaked AWS access key, member of `StreamGoat-Group-helpdesk`
+- Group `StreamGoat-Group-helpdesk` — `iam:ListGroupsForUser`, `iam:AddUserToGroup` (to StreamGoat-Group-*), read policies on StreamGoat groups
+- Group `StreamGoat-Group-secretreaders` — `secretsmanager:ListSecrets`, `secretsmanager:GetSecretValue` (on StreamGoat-*)
+
+**Secrets**
+- Secrets Manager secret `StreamGoat-DB-PROD-*` containing database credentials
 
 &nbsp;
 
-## 🖼️ Diagram
-<img src="./diagram.png" alt="Diagram" width="400" style="display:block; margin:auto;" />
+## Scenario Goals
+The attacker's objective is to leverage a leaked helpdesk user key, discover exploitable IAM permissions, brute-force group names to escalate privileges via group membership, and exfiltrate sensitive secrets from AWS Secrets Manager.
 
 &nbsp;
 
-## 🗡️ Attack Walkthrough
-- **Initial Access** - Attacker authenticates using the leaked AWS access key.
-- **Recon / Constraint Discovery** - Finds permissions to call iam:AddUserToGroup but not to list groups.
-- **Brute Force Group Names** - Attempts to add self to likely group names.
-- **Privilege Escalation** - Successfully joins StreamGoat_SecretReader.
-- **Secret Exfiltration** - Uses new privileges to list and read secrets in AWS Secrets Manager.
+## Diagram
+![Diagram](./diagram.png)
 
 &nbsp;
 
-## 📈 Expected Results
-**Successful Completion** - Admin role assumed via Lambda exploitation.
+## Attack Walkthrough
+- **Initial Access** — Configure leaked AWS access key for the helpdesk user
+- **Enumeration** — Probe service permissions (mostly denied), discover limited IAM access
+- **IAM Introspection** — Enumerate group memberships and policies, discover `iam:AddUserToGroup` permission
+- **Group Brute-force** — Attempt `AddUserToGroup` with guessed group names, successfully join `StreamGoat-Group-secretreaders`
+- **Secret Exfiltration** — Use newly inherited permissions to list and dump secrets from Secrets Manager
 
 &nbsp;
 
-## 🚀 Getting Started
+## Expected Results
+- Leaked helpdesk credentials validated
+- IAM introspection reveals `iam:AddUserToGroup` permission on StreamGoat-Group-* prefix
+- Group name brute-force succeeds — user joins `StreamGoat-Group-secretreaders`
+- Secrets Manager credentials exfiltrated (database admin username/password)
+
+&nbsp;
+
+## Getting Started
 
 #### Install Dependencies
-macOS
+
+MacOS
 ```bash
 brew install terraform awscli jq
 ```
@@ -52,8 +59,7 @@ Linux
 sudo apt update && sudo apt install -y terraform awscli jq
 ```
 
-#### 🏗️ Deploy
-Before deploying, download the provided Terraform configuration and attack script to the machine where you will run the attack steps.
+#### Deploy
 
 Use the provided Terraform configuration to deploy the full lab environment.
 
@@ -62,24 +68,23 @@ terraform init
 terraform apply -auto-approve
 ```
 
-#### 📝 Get Output Values
-Execute the commands below to collect the values that will serve as the attack script’s starting inputs
+#### Get Output Values
+Execute the command below to retrieve the leaked credentials for the attack script.
+
 ```bash
 terraform output --json | jq -r '"ACCESS KEY ID: \(.leaked_user_access_key_id.value) \nACCESS SECRET KEY: \(.leaked_user_secret_access_key.value)"'
 ```
 
-#### 🎯 Attack Execution
-Execute the attack script from your local terminal and use the output values provided at the end of the deployment as input parameters.
+#### Attack Execution
+Execute the attack script from your local terminal and provide the leaked credentials when prompted.
 
 ```bash
-chmod +x attach.sh
+chmod +x attack.sh
 ./attack.sh
 ```
 
-#### 🧹 Clean Up
-When you are finished, destroy all resources to avoid ongoing costs. This will tear down the entire lab environment including all compute, networking, and IAM components created during deployment.
-
-Use the following command for a full cleanup
+#### Clean Up
+Destroy all resources to avoid ongoing costs.
 
 ```bash
 terraform destroy -auto-approve

