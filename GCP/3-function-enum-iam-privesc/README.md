@@ -71,6 +71,15 @@ To install the **gcloud** CLI please check the official documentation: https://d
 Before deploying, make sure you are in this scenario directory and authenticated to a GCP project where you want to deploy the lab.
 
 ```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project <YOUR_PROJECT_ID>
+export GOOGLE_PROJECT=$(gcloud config get-value project)
+```
+
+Then deploy the infrastructure:
+
+```bash
 terraform init
 terraform apply -auto-approve
 ```
