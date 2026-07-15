@@ -71,11 +71,20 @@ Use the provided Terraform configuration to deploy the full lab environment.
 
 At the end of the deployment Terraform will display output values (e.g. public IP address of the target instance). Save these details, you will need them to run the attack script in the next stage.
 
+Authenticate to GCP and set your target project:
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project <YOUR_PROJECT_ID>
+export GOOGLE_PROJECT=$(gcloud config get-value project)
+```
+
 ⚠️ When a scenario’s initial step targets a public IP, add the public IP (or CIDR) of the machine that will run the attack script to the environment whitelist via terraform apply so the script can reach the target and complete any required interactions. See example
 
 ```bash
 terraform init
-terraform apply -var='attack_whitelist=["87.68.140.7/32","203.0.113.0/24"]' -auto-approve
+terraform apply -var=’attack_whitelist=["87.68.140.7/32","203.0.113.0/24"]’ -auto-approve
 ```
 
 #### Attack Execution

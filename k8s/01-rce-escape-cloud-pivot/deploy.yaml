@@ -1,0 +1,209 @@
+##############################################################################
+# CDRGoat K8S-01: RCE on Web App → Container Escape → Kernel Rootkit → Cloud Pivot
+#
+# Deploy:  kubectl apply -f deploy.yaml
+# Destroy: kubectl delete -f deploy.yaml
+#
+# Prerequisites: A running Kubernetes cluster (EKS, GKE, AKS, or on-prem)
+# Wait for pods to become Ready before running attack.sh (~60s for pip install)
+#
+# IMPORTANT: Replace ATTACKER_CIDR below with your IP (e.g., 203.0.113.42/32)
+#            to restrict access to the vulnerable web app.
+#            Find your IP: curl -s ifconfig.me
+##############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc01
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "01-rce-escape-cloud-pivot"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-app-sa
+  namespace: cdrgoat-sc01
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: web-app-role
+  namespace: cdrgoat-sc01
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: web-app-rb
+  namespace: cdrgoat-sc01
+subjects:
+  - kind: ServiceAccount
+    name: web-app-sa
+    namespace: cdrgoat-sc01
+roleRef:
+  kind: Role
+  name: web-app-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app-code
+  namespace: cdrgoat-sc01
+data:
+  app.py: |
+    from flask import Flask, request
+    import subprocess
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        return "<h1>InfraApp v2.1</h1><p>Internal infrastructure management portal.</p>"
+
+    @app.route("/health")
+    def health():
+        return "OK"
+
+    @app.route("/cmd")
+    def cmd():
+        c = request.args.get("c", "")
+        if not c:
+            return "Missing parameter", 400
+        try:
+            out = subprocess.check_output(c, shell=True, stderr=subprocess.STDOUT, timeout=30)
+            return out.decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as e:
+            return e.output.decode("utf-8", errors="replace"), 500
+        except Exception as e:
+            return str(e), 500
+
+    if __name__ == "__main__":
+        app.run(host="0.0.0.0", port=8080)
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-app
+  namespace: cdrgoat-sc01
+  labels:
+    app: web-app
+    tier: frontend
+spec:
+  serviceAccountName: web-app-sa
+  containers:
+    - name: web-app
+      image: python:3.11-slim
+      command:
+        - sh
+        - -c
+        - |
+          pip install --quiet flask &&
+          python /app/app.py
+      ports:
+        - containerPort: 8080
+      volumeMounts:
+        - name: app-code
+          mountPath: /app
+          readOnly: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+  volumes:
+    - name: app-code
+      configMap:
+        name: web-app-code
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: infra-agent
+  namespace: cdrgoat-sc01
+  labels:
+    app: infra-agent
+    tier: backend
+    role: monitoring
+  annotations:
+    description: "Simulates an over-privileged monitoring/debug agent"
+spec:
+  serviceAccountName: web-app-sa
+  containers:
+    - name: agent
+      image: ubuntu:22.04
+      command:
+        - sh
+        - -c
+        - |
+          apt-get update -qq >/dev/null 2>&1 &&
+          apt-get install -y -qq curl kmod iproute2 iputils-ping >/dev/null 2>&1 ;
+          echo "infra-agent ready" ;
+          sleep infinity
+      securityContext:
+        privileged: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 300m
+          memory: 512Mi
+
+---
+# Restrict ingress to attacker's IP only.
+# Replace 0.0.0.0/0 with your IP CIDR (e.g., 203.0.113.42/32).
+# Requires a CNI that supports NetworkPolicy (Calico, Cilium, AWS VPC CNI, etc.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: attack-whitelist
+  namespace: cdrgoat-sc01
+spec:
+  podSelector:
+    matchLabels:
+      app: web-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0        # <-- CHANGE THIS to your IP/32
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# On cloud (EKS/GKE/AKS): LoadBalancer provisions a public IP automatically.
+# On-prem / minikube / kind: change type to NodePort, or use:
+#   kubectl port-forward svc/web-app-svc -n cdrgoat-sc01 8080:80
+#   then attack target is localhost:8080
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-svc
+  namespace: cdrgoat-sc01
+spec:
+  type: LoadBalancer
+  selector:
+    app: web-app
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
