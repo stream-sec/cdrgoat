@@ -1,0 +1,135 @@
+##############################################################################
+# CDRGoat K8S-03: Leaked Kubeconfig -> IRSA -> Lambda PrivEsc
+#
+# Deploy order:
+#   1. kubectl apply -f deploy.yaml
+#   2. terraform apply -auto-approve
+#   3. ./setup.sh   (annotates SA with IRSA role, restarts pod)
+#
+# Destroy: kubectl delete -f deploy.yaml && terraform destroy -auto-approve
+##############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc03
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "03-leaked-kubeconfig-lambda-privesc"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dev-deployer-sa
+  namespace: cdrgoat-sc03
+  annotations:
+    description: "Simulates a CI/CD deployer SA whose kubeconfig was leaked"
+    # eks.amazonaws.com/role-arn is added by setup.sh after terraform apply
+
+---
+# Limited permissions - enough for recon + exec into pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dev-deployer-role
+  namespace: cdrgoat-sc03
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list", "get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dev-deployer-rb
+  namespace: cdrgoat-sc03
+subjects:
+  - kind: ServiceAccount
+    name: dev-deployer-sa
+    namespace: cdrgoat-sc03
+roleRef:
+  kind: Role
+  name: dev-deployer-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ClusterRole for namespace listing (recon)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cdrgoat-sc03-ns-reader
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cdrgoat-sc03-ns-reader-crb
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+subjects:
+  - kind: ServiceAccount
+    name: dev-deployer-sa
+    namespace: cdrgoat-sc03
+roleRef:
+  kind: ClusterRole
+  name: cdrgoat-sc03-ns-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Backend app pod - IRSA role attached via setup.sh
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend-app
+  namespace: cdrgoat-sc03
+  labels:
+    app: backend-app
+    tier: backend
+spec:
+  serviceAccountName: dev-deployer-sa
+  containers:
+    - name: app
+      image: python:3.11-slim
+      command:
+        - sh
+        - -c
+        - |
+          pip install --quiet flask boto3 &&
+          python -c "
+          from flask import Flask
+          app = Flask(__name__)
+
+          @app.route('/')
+          def index():
+              return '<h1>Backend API v1.4</h1>'
+
+          @app.route('/health')
+          def health():
+              return 'OK'
+
+          app.run(host='0.0.0.0', port=8080)
+          "
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi

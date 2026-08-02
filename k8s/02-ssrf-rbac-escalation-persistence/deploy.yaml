@@ -1,0 +1,244 @@
+##############################################################################
+# CDRGoat K8S-02: SSRF on Web App -> RBAC Escalation -> Secret Exfil -> Persistence
+#
+# Deploy:  kubectl apply -f deploy.yaml
+# Destroy: kubectl delete -f deploy.yaml
+#
+# Prerequisites: A running Kubernetes cluster (EKS, GKE, AKS, or on-prem)
+# Wait for pods to become Ready before running attack.sh (~60s for pip install)
+#
+# IMPORTANT: Replace ATTACKER_CIDR below with your IP (e.g., 203.0.113.42/32)
+#            to restrict access to the vulnerable web app.
+#            Find your IP: curl -s ifconfig.me
+##############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc02
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "02-ssrf-rbac-escalation-persistence"
+
+---
+# Target namespace with secrets to exfiltrate
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc02-prod
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "02-ssrf-rbac-escalation-persistence"
+    tier: production
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-app-sa
+  namespace: cdrgoat-sc02
+
+---
+# ClusterRole with overly broad permissions (simulates Helm chart misconfiguration)
+# The dangerous permission: create clusterrolebindings
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cdrgoat-sc02-web-app-role
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "namespaces"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "get"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ["create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["list", "bind"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews", "selfsubjectrulesreviews"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cdrgoat-sc02-web-app-crb
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+subjects:
+  - kind: ServiceAccount
+    name: web-app-sa
+    namespace: cdrgoat-sc02
+roleRef:
+  kind: ClusterRole
+  name: cdrgoat-sc02-web-app-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Simulated production database credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: database-credentials
+  namespace: cdrgoat-sc02-prod
+  labels:
+    app: payment-service
+type: Opaque
+stringData:
+  DB_HOST: "prod-mysql-primary.cdrgoat-sc02-prod.svc.cluster.local"
+  DB_PORT: "3306"
+  DB_NAME: "payments_db"
+  DB_USER: "svc_payments"
+  DB_PASSWORD: "Pr0d-MySQL#2024!xK9"
+
+---
+# Simulated API keys
+apiVersion: v1
+kind: Secret
+metadata:
+  name: external-api-keys
+  namespace: cdrgoat-sc02-prod
+  labels:
+    app: integration-service
+type: Opaque
+stringData:
+  STRIPE_SECRET_KEY: "sk_test_FAKE_cdrgoat_51N0xQjDk3F8mZ9pL2wR7vY4bH6gT0sU"
+  SENDGRID_API_KEY: "SG.FAKE_cdrgoat.fK3mN7pR9sW2xY4bD6hJ_qL5tV8wZ0cE3gI6jM9nO"
+  SLACK_WEBHOOK: "https://hooks.example.com/services/T024BE7LD/B0DAJ3LQ2/FAKE_cdrgoat"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app-code
+  namespace: cdrgoat-sc02
+data:
+  app.py: |
+    from flask import Flask, request, Response
+    import urllib.request, ssl
+
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        return "<h1>DataSync v3.2</h1><p>Internal data synchronization service.</p>"
+
+    @app.route("/health")
+    def health():
+        return "OK"
+
+    @app.route("/fetch", methods=["GET", "POST"])
+    def fetch():
+        """Proxy endpoint - fetches content from a given URL.
+        Supports file:// for local config reads (intentionally vulnerable)."""
+        url = request.args.get("url", "")
+        if not url:
+            return "Missing 'url' parameter", 400
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            headers = {}
+            for h in ["Authorization", "Content-Type", "Accept"]:
+                val = request.headers.get(h)
+                if val:
+                    headers[h] = val
+            body = request.get_data() or None
+            if request.method == "GET":
+                body = None
+            req = urllib.request.Request(url, data=body, headers=headers, method=request.method)
+            resp = urllib.request.urlopen(req, context=ctx, timeout=30)
+            data = resp.read()
+            ct = resp.headers.get("Content-Type", "text/plain")
+            return Response(data, content_type=ct)
+        except Exception as e:
+            return str(e), 500
+
+    if __name__ == "__main__":
+        app.run(host="0.0.0.0", port=8080)
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-app
+  namespace: cdrgoat-sc02
+  labels:
+    app: web-app
+    tier: frontend
+spec:
+  serviceAccountName: web-app-sa
+  containers:
+    - name: web-app
+      image: python:3.11-slim
+      command:
+        - sh
+        - -c
+        - |
+          pip install --quiet flask &&
+          python /app/app.py
+      ports:
+        - containerPort: 8080
+      volumeMounts:
+        - name: app-code
+          mountPath: /app
+          readOnly: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+  volumes:
+    - name: app-code
+      configMap:
+        name: web-app-code
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: attack-whitelist
+  namespace: cdrgoat-sc02
+spec:
+  podSelector:
+    matchLabels:
+      app: web-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0        # <-- CHANGE THIS to your IP/32
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-svc
+  namespace: cdrgoat-sc02
+spec:
+  type: LoadBalancer
+  selector:
+    app: web-app
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
