@@ -1,93 +1,101 @@
 # 2. SSRF on EC2 to Lambda Privilege Escalation
 
-## 🗺️ Overview
-This scenario demonstrates how an attacker can chain a vulnerability in a public-facing EC2 instance with overly permissive IAM and Lambda roles to achieve full AWS account takeover. The attack begins with exploitation of an SSRF vulnerability in EC2-A’s web application to access the Instance Metadata Service (IMDSv2) and steal temporary IAM role credentials. With these credentials, the attacker pivots into an internal EC2-B via AWS Systems Manager (SSM), then abuses excessive permissions, specifically iam:PassRole, lambda:CreateFunction and lambda:InvokeFunction, to create and invoke a malicious Lambda function with AdministratorAccess. The Lambda is used to assign administrative privileges to a new IAM user under the attacker’s control, granting persistent, account-wide access. This exercise highlights the dangers of SSRF exploitation, weak IAM hygiene, and privilege escalation through misconfigured Lambda execution roles.
+## Overview
+This scenario demonstrates a multi-stage AWS compromise starting from a Server-Side Request Forgery (SSRF) vulnerability in a public-facing web application on EC2-A. The attacker leverages SSRF to access the Instance Metadata Service (IMDSv1) and steal temporary IAM role credentials. Using the stolen credentials, the attacker enumerates the environment and discovers EC2-B accessible via AWS Systems Manager (SSM). After pivoting to EC2-B, the attacker discovers its IAM role has permissions to create Lambda functions and pass IAM roles. By enumerating available roles, the attacker finds one with `iam:AttachRolePolicy` and creates a privilege escalation Lambda that attaches AdministratorAccess to EC2-A's role, achieving full account compromise.
+
+This exercise highlights how SSRF exploitation, overly permissive IAM roles, and misconfigured Lambda execution roles can be chained to escalate from a single web vulnerability to full AWS account takeover.
 
 &nbsp;
 
-## 🧩 Required Resources
+## Required Resources
 
 **Networking**
-- 1 × VPC (single region)
-- Subnets - 1 private, 1 public (EC2-A in public, EC2-B in private)
-- Internet Gateway - attached to VPC
+- 1 VPC, single region
+- 1 public subnet (EC2-A), 1 private subnet (EC2-B)
+- Internet Gateway attached to VPC
+- NAT Gateway for EC2-B outbound access
+- Security Groups
+  - Allow HTTP (8080) and SSH (22) from attacker IP to EC2-A
+  - Allow SSH (22) from public SG to EC2-B
 
 **Compute**
-- EC2-A - Publicly accessible, hosts vulnerable web application
-- EC2-B - Internal host, not accessible from internet directly
+- EC2-A — Public web server running a vulnerable Flask application (SSRF endpoint)
+- EC2-B — Internal instance used as pivot for Lambda-based privilege escalation
 
 **Serverless**
-- Lambda - Deployed by attacker for privilege escalation
+- Lambda — Deployed by attacker during the attack for privilege escalation
 
 **IAM / Identities & Access**
-- EC2-A role - ssm:StartSession, ssm:SendCommand
-- EC2-B role - iam:PassRole, lambda:CreateFunction, lambda:InvokeFunction
-- Lambda execution role - Excessive privileges enabling escalation
+- EC2-A role — `ec2:DescribeInstances`, `ssm:SendCommand`, `ssm:StartSession`, SSM managed policy
+- EC2-B role — `lambda:CreateFunction`, `lambda:InvokeFunction`, `iam:PassRole`, `iam:ListRoles`, `iam:GetRole`, `iam:ListRolePolicies`, `iam:GetRolePolicy`
+- Lambda execution role — `iam:AttachRolePolicy` (enables privilege escalation)
 
 &nbsp;
 
-## 🎯 Scenario Goals
-Demonstrate how an SSRF vulnerability can be leveraged to gain AWS credentials, pivot to an internal system via SSM, and escalate to full account compromise through misconfigured IAM and Lambda privileges.
+## Scenario Goals
+The attacker's objective is to exploit an SSRF vulnerability on a public EC2 instance, steal IMDS credentials, pivot to an internal EC2 instance via SSM, and escalate privileges to full AWS account administrator access through a malicious Lambda function.
 
 &nbsp;
 
-## 🖼️ Diagram
-<img src="./diagram.png" alt="Diagram" width="400" style="display:block; margin:auto;" />
+## Diagram
+![Diagram](./diagram.png)
 
 &nbsp;
 
-## 🗡️ Attack Walkthrough
-- **Initial Access** - Exploit SSRF in EC2-A’s application to access the Instance Metadata Service and obtain IAM role credentials.
-- **Lateral Movement** - Use stolen EC2-A credentials to issue ssm:SendCommand or start a session on EC2-B.
-- **Privilege Escalation** - From EC2-B, use iam:PassRole with Lambda privileges to create a new Lambda function with AdministratorAccess.
-- **Persistence** - Invoke the Lambda to create a new IAM user and grant administrative rights.
-- **Full Compromise** - Use the newly created IAM user for persistent account-wide control.
+## Attack Walkthrough
+- **Initial Access** — Exploit SSRF vulnerability on EC2-A to access the Instance Metadata Service (IMDSv1) and steal IAM role credentials
+- **Enumeration** — Probe IAM permissions and discover EC2-B via `ec2:DescribeInstances`
+- **Lateral Movement** — Pivot to EC2-B via SSM SendCommand to execute commands remotely
+- **Privilege Discovery** — Enumerate EC2-B's role permissions (`lambda:CreateFunction`, `iam:PassRole`) and discover a role with `iam:AttachRolePolicy`
+- **Privilege Escalation** — Create a Lambda function with the privileged role that attaches AdministratorAccess to EC2-A's role
+- **Full Compromise** — Invoke the Lambda to escalate EC2-A's role to full administrator access
 
 &nbsp;
 
-## 📈 Expected Results
-**Successful Completion** - Administrative IAM user created with full account privileges.
+## Expected Results
+- Temporary AWS credentials harvested from IMDS via SSRF
+- Lateral movement to EC2-B via SSM
+- Discovery of Lambda management permissions and AttachRolePolicy role
+- Privilege escalation Lambda created and invoked
+- EC2-A role escalated to AdministratorAccess (full account compromise)
 
 &nbsp;
 
-## 🚀 Getting Started
+## Getting Started
 
 #### Install Dependencies
-macOS
+
+MacOS
 ```bash
 brew install terraform awscli jq
 ```
 Linux
 ```bash
-sudo apt update && sudo apt install -y terraform awscli jq session-manager-plugin
+sudo apt update && sudo apt install -y terraform awscli jq
 ```
 
-### 🏗️ Deploy
-Before deploying, download the provided Terraform configuration and Attack Script to the machine where you will run the attack steps.
+#### Deploy
 
-Use the provided Terraform configuration to deploy the full lab environment.
+Use the provided Terraform configuration to deploy the full lab environment. At the end of the deployment, Terraform will display the public IP of EC2-A — save this value for the attack script.
 
-At the end of the deployment Terraform will display output values such as the public IP address of the target instance. Save these details, you will need them to run the attack script in the next stage.
-
-⚠️ When a scenario’s initial step targets a public IP, add the public IP (or CIDR) of the machine that will run the attack script to the environment whitelist via terraform apply so the script can reach the target and complete any required interactions. See example
+Add the public IP (or CIDR) of your attack machine to the whitelist so the script can reach the target.
 
 ```bash
 terraform init
-terraform apply -var='attack_whitelist=["87.68.140.7/32","203.0.113.0/24"]' -auto-approve
+terraform apply -var='attack_whitelist=["87.68.140.7/32"]' -auto-approve
 ```
 
-#### 🎯 Attack Execution
-Execute the attack script from your local terminal and use the output values provided at the end of the deployment as input parameters.
+#### Attack Execution
+Execute the attack script from your local terminal and provide the EC2-A public IP when prompted.
 
 ```bash
 chmod +x attack.sh
 ./attack.sh
 ```
 
-#### 🧹 Clean Up
-When you are finished, destroy all resources to avoid ongoing costs. This will tear down the entire lab environment including all compute, networking, and IAM components created during deployment.
+#### Clean Up
+Destroy all resources to avoid ongoing costs.
 
-Use the following command for a full cleanup
 ```bash
 terraform destroy -var='attack_whitelist=[]' -auto-approve
 ```

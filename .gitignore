@@ -225,3 +225,5 @@ ideas.md
 temp/
 leaked-kubeconfig.yaml
 lambda/
+lambda1/
+lambda2/
