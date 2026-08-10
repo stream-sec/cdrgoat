@@ -1,0 +1,68 @@
+##############################################################################
+# CDRGoat K8S-04: Leaked Kubeconfig -> Cryptominer DaemonSet -> Persistence
+#
+# Deploy:  kubectl apply -f deploy.yaml
+# Destroy: kubectl delete -f deploy.yaml
+#
+# After deploying, generate the "leaked" kubeconfig:
+#   ./generate-kubeconfig.sh
+#
+# Prerequisites: A running Kubernetes cluster (EKS, GKE, AKS, or on-prem)
+##############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc04
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "04-leaked-kubeconfig-cryptominer-persistence"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cicd-deployer-sa
+  namespace: cdrgoat-sc04
+  annotations:
+    description: "Simulates a CI/CD deployer SA leaked from pipeline logs"
+
+---
+# Namespace-scoped Role - can deploy workloads only in cdrgoat-sc04
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cicd-deployer-role
+  namespace: cdrgoat-sc04
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services"]
+    verbs: ["list", "get", "create", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments"]
+    verbs: ["create", "list", "get", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["create", "list", "get", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "list", "get", "delete"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews", "selfsubjectrulesreviews"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cicd-deployer-rb
+  namespace: cdrgoat-sc04
+subjects:
+  - kind: ServiceAccount
+    name: cicd-deployer-sa
+    namespace: cdrgoat-sc04
+roleRef:
+  kind: Role
+  name: cicd-deployer-role
+  apiGroup: rbac.authorization.k8s.io

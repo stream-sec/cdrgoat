@@ -1,0 +1,350 @@
+##############################################################################
+# CDRGoat K8S-05: RCE -> Lateral Movement (Redis + SSH) -> DNS Exfil
+#
+# Deploy:  kubectl apply -f deploy.yaml
+# Destroy: kubectl delete -f deploy.yaml
+#
+# Wait for all pods to be ready (~90s for package installs)
+# No NetworkPolicies between internal services (the core misconfiguration)
+##############################################################################
+
+---
+# Application namespace (frontend, redis, worker)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc05-app
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "05-lateral-movement-east-west"
+
+---
+# Infrastructure namespace (admin pod)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc05-infra
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "05-lateral-movement-east-west"
+
+---
+# Admin SA with cross-namespace secret read (overprivileged)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-ops-sa
+  namespace: cdrgoat-sc05-infra
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cdrgoat-sc05-admin-role
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "pods", "namespaces"]
+    verbs: ["list", "get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cdrgoat-sc05-admin-crb
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+subjects:
+  - kind: ServiceAccount
+    name: admin-ops-sa
+    namespace: cdrgoat-sc05-infra
+roleRef:
+  kind: ClusterRole
+  name: cdrgoat-sc05-admin-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+##############################################################################
+# Pod 1: Frontend (public-facing, command injection)
+##############################################################################
+apiVersion: v1
+kind: Pod
+metadata:
+  name: frontend
+  namespace: cdrgoat-sc05-app
+  labels:
+    app: frontend
+    tier: frontend
+spec:
+  containers:
+    - name: app
+      image: python:3.11-slim
+      command:
+        - sh
+        - -c
+        - |
+          pip install --quiet flask &&
+          python -c "
+          from flask import Flask, request
+          import subprocess
+          app = Flask(__name__)
+
+          @app.route('/')
+          def index():
+              return '<h1>ShopFront v3.1</h1><p>Online store frontend.</p>'
+
+          @app.route('/health')
+          def health():
+              return 'OK'
+
+          @app.route('/run')
+          def run():
+              cmd = request.args.get('cmd', '')
+              if not cmd:
+                  return 'Missing cmd parameter', 400
+              try:
+                  out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, timeout=30)
+                  return out.decode('utf-8', errors='replace')
+              except subprocess.CalledProcessError as e:
+                  return e.output.decode('utf-8', errors='replace'), 500
+              except Exception as e:
+                  return str(e), 500
+
+          app.run(host='0.0.0.0', port=8080)
+          "
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+---
+##############################################################################
+# Pod 2: Redis cache (unauthenticated - the misconfiguration)
+# Stores session data, cached credentials, and worker SSH config
+##############################################################################
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-cache
+  namespace: cdrgoat-sc05-app
+  labels:
+    app: redis-cache
+    tier: backend
+spec:
+  containers:
+    - name: redis
+      image: redis:7-alpine
+      command:
+        - sh
+        - -c
+        - |
+          # Start Redis with no auth (the misconfiguration)
+          redis-server --protected-mode no --port 6379 &
+          sleep 2
+          # Seed with application data and credentials
+          redis-cli SET session:user1 '{"user":"john","role":"admin","email":"john@example.com"}'
+          redis-cli SET session:user2 '{"user":"sarah","role":"editor","email":"sarah@example.com"}'
+          redis-cli SET cache:db_config '{"host":"prod-mysql-primary.internal","port":3306,"user":"svc_orders","password":"0rd3rs-DB#Pr0d!","database":"orders_db"}'
+          redis-cli SET cache:worker_ssh '{"host":"admin-svc.cdrgoat-sc05-infra.svc.cluster.local","port":2022,"user":"admin","pass":"Adm1n-0ps#2024"}'
+          redis-cli SET app:api_key 'sk_prod_Kj3mN7pR9sW2xY4bD6hJqL5tV8w'
+          redis-cli SET app:jwt_secret 'super-secret-jwt-signing-key-do-not-share'
+          echo "Redis ready with seeded data"
+          wait
+      ports:
+        - containerPort: 6379
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+---
+##############################################################################
+# Pod 3: Worker service (background job processor)
+##############################################################################
+apiVersion: v1
+kind: Pod
+metadata:
+  name: worker-svc
+  namespace: cdrgoat-sc05-app
+  labels:
+    app: worker-svc
+    tier: backend
+spec:
+  containers:
+    - name: app
+      image: python:3.11-slim
+      command:
+        - sh
+        - -c
+        - |
+          pip install --quiet flask redis &&
+          python -c "
+          from flask import Flask
+          import redis, json
+          app = Flask(__name__)
+          r = redis.Redis(host='redis-cache', port=6379, decode_responses=True)
+
+          @app.route('/')
+          def index():
+              return '{\"service\": \"worker\", \"version\": \"1.3\", \"redis\": \"connected\"}'
+
+          @app.route('/health')
+          def health():
+              try:
+                  r.ping()
+                  return 'OK'
+              except:
+                  return 'Redis down', 500
+
+          app.run(host='0.0.0.0', port=5000)
+          "
+      ports:
+        - containerPort: 5000
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+---
+##############################################################################
+# Pod 4: Admin/ops pod (infra namespace, SSH server on 2022, privileged SA)
+##############################################################################
+apiVersion: v1
+kind: Pod
+metadata:
+  name: admin-ops
+  namespace: cdrgoat-sc05-infra
+  labels:
+    app: admin-ops
+    tier: infrastructure
+    role: operations
+spec:
+  serviceAccountName: admin-ops-sa
+  containers:
+    - name: admin
+      image: ubuntu:22.04
+      command:
+        - sh
+        - -c
+        - |
+          apt-get update -qq >/dev/null 2>&1 &&
+          apt-get install -y -qq openssh-server curl jq >/dev/null 2>&1
+          mkdir -p /run/sshd
+          useradd -m -s /bin/bash admin 2>/dev/null || true
+          echo 'admin:Adm1n-0ps#2024' | chpasswd
+          sed -i 's/#Port 22/Port 2022/' /etc/ssh/sshd_config
+          sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+          sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          /usr/sbin/sshd -D -p 2022 &
+          echo "admin-ops ready (SSH on port 2022)"
+          sleep infinity
+      ports:
+        - containerPort: 2022
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+---
+##############################################################################
+# Services
+##############################################################################
+
+# Frontend - LoadBalancer (public)
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: cdrgoat-sc05-app
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+
+---
+# Redis - ClusterIP (internal only)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache
+  namespace: cdrgoat-sc05-app
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-cache
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+
+---
+# Worker - ClusterIP (internal only)
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-svc
+  namespace: cdrgoat-sc05-app
+spec:
+  type: ClusterIP
+  selector:
+    app: worker-svc
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP
+
+---
+# Admin - ClusterIP (internal only, cross-namespace)
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-svc
+  namespace: cdrgoat-sc05-infra
+spec:
+  type: ClusterIP
+  selector:
+    app: admin-ops
+  ports:
+    - port: 2022
+      targetPort: 2022
+      protocol: TCP
+
+---
+# NetworkPolicy whitelist for frontend ingress only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: attack-whitelist
+  namespace: cdrgoat-sc05-app
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0        # <-- CHANGE THIS to your IP/32
+      ports:
+        - port: 8080
+          protocol: TCP
