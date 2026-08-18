@@ -1,0 +1,268 @@
+##############################################################################
+# CDRGoat K8S-06: LFI -> nodes/proxy Audit Bypass -> etcd Direct Injection
+#
+# Deploy:  kubectl apply -f deploy.yaml
+# Destroy: kubectl delete -f deploy.yaml
+#
+# Wait for pod to be ready (~60s for pip install)
+##############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc06
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "06-lfi-nodes-proxy-etcd-persistence"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-app-sa
+  namespace: cdrgoat-sc06
+
+---
+# ClusterRole with nodes/proxy GET - simulates common Helm chart RBAC
+# 69+ Helm charts grant this permission by default
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cdrgoat-sc06-web-app-role
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "namespaces"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews", "selfsubjectrulesreviews"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cdrgoat-sc06-web-app-crb
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+subjects:
+  - kind: ServiceAccount
+    name: web-app-sa
+    namespace: cdrgoat-sc06
+roleRef:
+  kind: ClusterRole
+  name: cdrgoat-sc06-web-app-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Web app with RCE vulnerability
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app-code
+  namespace: cdrgoat-sc06
+data:
+  app.py: |
+    from flask import Flask, request
+    import subprocess
+
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        return "<h1>DocViewer v2.3</h1><p>Internal document viewer.</p>"
+
+    @app.route("/health")
+    def health():
+        return "OK"
+
+    @app.route("/cmd")
+    def cmd():
+        c = request.args.get("c", "")
+        if not c:
+            return "Missing parameter", 400
+        try:
+            out = subprocess.check_output(c, shell=True, stderr=subprocess.STDOUT, timeout=30)
+            return out.decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as e:
+            return e.output.decode("utf-8", errors="replace"), 500
+        except Exception as e:
+            return str(e), 500
+
+    if __name__ == "__main__":
+        app.run(host="0.0.0.0", port=8080)
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-app
+  namespace: cdrgoat-sc06
+  labels:
+    app: web-app
+    tier: frontend
+spec:
+  serviceAccountName: web-app-sa
+  containers:
+    - name: web-app
+      image: python:3.11-slim
+      command:
+        - sh
+        - -c
+        - |
+          pip install --quiet flask &&
+          python /app/app.py
+      ports:
+        - containerPort: 8080
+      volumeMounts:
+        - name: app-code
+          mountPath: /app
+          readOnly: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+  volumes:
+    - name: app-code
+      configMap:
+        name: web-app-code
+
+---
+# Target pod in a different namespace - simulates a workload the attacker can
+# reach via nodes/proxy (cross-namespace exec without pods/exec RBAC)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cdrgoat-sc06-target
+  labels:
+    app.kubernetes.io/part-of: cdrgoat
+    scenario: "06-lfi-nodes-proxy-etcd-persistence"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-api-sa
+  namespace: cdrgoat-sc06-target
+
+---
+# The target SA has secret read access in its namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backend-api-role
+  namespace: cdrgoat-sc06-target
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list", "get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-api-rb
+  namespace: cdrgoat-sc06-target
+subjects:
+  - kind: ServiceAccount
+    name: backend-api-sa
+    namespace: cdrgoat-sc06-target
+roleRef:
+  kind: Role
+  name: backend-api-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Secrets the attacker can read after stealing the SA token
+apiVersion: v1
+kind: Secret
+metadata:
+  name: payment-gateway-keys
+  namespace: cdrgoat-sc06-target
+type: Opaque
+stringData:
+  PAYMENT_API_KEY: "pk_test_FAKE_cdrgoat_Rj4mN7pQ9sW2xY4bD6hJqL5t"
+  PAYMENT_SECRET: "sk_test_FAKE_cdrgoat_Kf3nM8pR0tX3yZ5cE7iLrO6u"
+  WEBHOOK_SECRET: "whsec_FAKE_cdrgoat_V8wZ0cE3gI6jM9nO"
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend-api
+  namespace: cdrgoat-sc06-target
+  labels:
+    app: backend-api
+    tier: backend
+spec:
+  serviceAccountName: backend-api-sa
+  containers:
+    - name: api
+      image: ubuntu:22.04
+      command:
+        - sh
+        - -c
+        - |
+          echo "backend-api ready" && sleep infinity
+      env:
+        - name: DB_HOST
+          value: "prod-mysql.internal"
+        - name: DB_USER
+          value: "svc_backend"
+        - name: DB_PASSWORD
+          value: "B@ckend-DB#2024!"
+        - name: API_SECRET
+          value: "sk_prod_secret_key_do_not_share"
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: attack-whitelist
+  namespace: cdrgoat-sc06
+spec:
+  podSelector:
+    matchLabels:
+      app: web-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0        # <-- CHANGE THIS to your IP/32
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-svc
+  namespace: cdrgoat-sc06
+spec:
+  type: LoadBalancer
+  selector:
+    app: web-app
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
