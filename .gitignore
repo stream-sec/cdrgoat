@@ -227,3 +227,4 @@ leaked-kubeconfig.yaml
 lambda/
 lambda1/
 lambda2/
+.mcp.json
