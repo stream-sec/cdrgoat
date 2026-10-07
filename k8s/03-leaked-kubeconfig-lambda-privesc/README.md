@@ -112,5 +112,10 @@ terraform destroy -var="eks_cluster_name=$CLUSTER_NAME" -auto-approve
 kubectl delete -f deploy.yaml
 
 # Remove OIDC provider (only if you created it in step 0)
-eksctl utils disassociate-iam-oidc-provider --cluster $CLUSTER_NAME --region us-east-1
+# Note: eksctl has no "disassociate" command, delete it via AWS CLI
+OIDC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region us-east-1 \
+  --query 'cluster.identity.oidc.issuer' --output text | cut -d/ -f5)
+OIDC_ARN=$(aws iam list-open-id-connect-providers \
+  --query "OpenIDConnectProviderList[?contains(Arn, '${OIDC_ID}')].Arn" --output text)
+aws iam delete-open-id-connect-provider --open-id-connect-provider-arn "$OIDC_ARN"
 ```
